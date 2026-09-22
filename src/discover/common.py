@@ -150,9 +150,9 @@ def dedupe(candidates: list[Candidate]) -> list[Candidate]:
 
 _UPSERT = """
 INSERT INTO candidates (source, external_id, canonical_url, title, thumb_url, views, likes,
-                        comments, duration_s, published_at, region, raw_json)
+                        comments, duration_s, published_at, region, raw_json, last_seen_at)
 VALUES (:source, :external_id, :canonical_url, :title, :thumb_url, :views, :likes,
-        :comments, :duration_s, :published_at, :region, :raw_json)
+        :comments, :duration_s, :published_at, :region, :raw_json, datetime('now'))
 ON CONFLICT(canonical_url) DO UPDATE SET
     views      = COALESCE(excluded.views, views),
     likes      = COALESCE(excluded.likes, likes),

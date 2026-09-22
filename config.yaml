@@ -48,6 +48,10 @@ discovery:
 ranking:
   weights: { view_velocity: 0.5, engagement: 0.3, recency: 0.2 }
   top_n: 5
+  window_hours: 48                 # only candidates seen this recently are ranked
+  classify_pool: 30                # top-scored unchecked items sent to the LLM per run
+  batch_size: 15                   # items per LLM call
+  max_per_category: 2              # keep the daily picks varied
   categories: [news-lite, tech, life-hack, sports, culture, wow-facts]
   flagged_categories: [political]  # never auto-scheduled
 

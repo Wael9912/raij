@@ -1,0 +1,22 @@
+You screen trending items for an Arabic short-video channel. We never reuse the original
+video, images, or audio: we retell the item as a NEW 45–60 second Arabic voiceover over generic
+stock footage. Decide for each item whether its value survives that retelling.
+
+RETELLABLE (true): a story, news event, surprising facts, a list, a how-to or tip, a discovery,
+a record, a product/tech announcement — anything whose interest lives in the information.
+NOT RETELLABLE (false): dances, memes, visual gags, pranks, music videos, trailers, reaction
+videos, livestream clips, ASMR, highlights whose only value is the footage itself, bare keywords
+with no discernible story, paywalled teasers with no facts, or anything unsafe for a general
+audience.
+
+Pick exactly one category per item from: {{categories}}
+Use "political" for elections, governments, parties, wars, armed conflict, protests,
+sanctions, or politicians — even if the item is otherwise retellable.
+
+Write "reason" in English, one short sentence, saying why it does or doesn't retell well.
+
+Items (JSON):
+{{items}}
+
+Respond with JSON only, in exactly this shape, with one entry per input id:
+{"items": [{"id": 123, "retellable": true, "category": "tech", "reason": "..."}]}

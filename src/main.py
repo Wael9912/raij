@@ -36,8 +36,14 @@ def cmd_discover(cfg, conn, args) -> int:
     return discover(cfg, conn, only=getattr(args, "source", None), dry_run=args.dry_run)
 
 
+def cmd_rank(cfg, conn, args) -> int:
+    from src.rank.runner import rank
+    return rank(cfg, conn, dry_run=args.dry_run)
+
+
 HANDLERS = {name: _not_implemented(name) for name in STAGES}
 HANDLERS["discover"] = cmd_discover
+HANDLERS["rank"] = cmd_rank
 
 
 def cmd_init_db(cfg, conn, args) -> int:

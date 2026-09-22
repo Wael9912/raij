@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     category      TEXT,
     retellable    INTEGER,                          -- NULL=unchecked, 0/1
     rank_reason   TEXT,
+    selected_at   TEXT,                             -- UTC; when rank picked it for the day
     status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -144,6 +145,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
 # SQLite can't ALTER ADD a column with a non-constant default, so these use a constant.
 MIGRATIONS = [
     ("candidates", "last_seen_at", "TEXT"),
+    ("candidates", "selected_at", "TEXT"),
 ]
 
 
@@ -153,6 +155,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    # last_seen_at arrived via ALTER (no default), so older rows may lack it.
+    conn.execute("UPDATE candidates SET last_seen_at = discovered_at WHERE last_seen_at IS NULL")
     conn.commit()
 
 

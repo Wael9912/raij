@@ -181,9 +181,17 @@ def test_discover_dry_run_makes_no_calls(env):
     assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
 
 
-def test_migration_adds_last_seen(tmp_path):
+def test_migration_adds_and_backfills_last_seen(tmp_path):
     conn = db.connect(tmp_path / "old.db")
-    conn.execute("CREATE TABLE candidates (id INTEGER PRIMARY KEY, canonical_url TEXT UNIQUE)")
+    conn.execute("CREATE TABLE candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, "
+                 "external_id TEXT NOT NULL, canonical_url TEXT NOT NULL UNIQUE, title TEXT, thumb_url TEXT, "
+                 "views INTEGER, likes INTEGER, comments INTEGER, duration_s INTEGER, published_at TEXT, "
+                 "region TEXT, raw_json TEXT, score REAL, category TEXT, retellable INTEGER, rank_reason TEXT, "
+                 "status TEXT NOT NULL DEFAULT 'new', discovered_at TEXT NOT NULL DEFAULT (datetime('now')), "
+                 "UNIQUE (source, external_id))")
+    conn.execute("INSERT INTO candidates (source, external_id, canonical_url) VALUES ('rss', 'a', 'https://a')")
     db.init_db(conn)
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(candidates)")}
-    assert "last_seen_at" in cols
+    assert {"last_seen_at", "selected_at"} <= cols
+    upsert_candidates(conn, [Candidate(source="rss", external_id="b", canonical_url="https://b")])
+    assert conn.execute("SELECT COUNT(*) FROM candidates WHERE last_seen_at IS NULL").fetchone()[0] == 0
