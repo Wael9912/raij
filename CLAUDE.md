@@ -13,14 +13,14 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 2 Rank & Select | ✅ done | `40288ba`, `e59f351` | live with Gemini: 30 screened → 5 selected, political flagged |
 | 3 Extract | ✅ done | `7672048`, `affe555` | live: 5/5 story cards (3 trends via news articles, 2 RSS articles). yt-dlp subs verified live on a real video; whisper fallback mocked only (`uv sync --group whisper` not installed) |
 | 4 Script | ✅ done | `d860e76`, `dde9d8c` | live: 5/5 passed (3.5/3.6-flash); Arabic-source similarity 0.06–0.10; number gate caught 211→201, 953,531→995,000 |
-| 5 Voice | ⏭ next | | see plan below |
-| 6 Assemble | ⬜ | | |
+| 5 Voice | ✅ done | `5aba7c1` | live: 5/5 voiced, 44–53s at +10%, −14.2 LUFS / −1.5 dBTP; Gemini transcription of a clip matched the script word for word |
+| 6 Assemble | ⏭ next | | see plan below — **needs** `ffmpeg-full` (libass) + a Pexels or Pixabay key |
 | 7 Telegram review | ⬜ | | |
 | 8 Publish | ⬜ | | |
 | 9 Analytics + runner | ⬜ | | |
 
 Keys in `.env`: `GEMINI_API_KEY` only. Missing: YouTube, Reddit, Groq, Pexels, Pixabay, Telegram, Meta, YouTube OAuth.
-Ollama is not installed.
+Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** (subtitles impossible) → Phase 6.
 
 ## Commands
 
@@ -71,22 +71,35 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   0.05–0.15 vs threshold 0.35; English sources skip the gate (similarity NULL). One retry per failed check that
   names the problem; a gate-failed draft is kept as `superseded` beside its rewrite. `write_script(edit_note=)`
   is the hook for Phase 7 "✏️ Edit script".
+- **Script length 85–115 words, not the brief's 110–150**: measured Arabic neural TTS speaks ~1.85 words/s at +0%
+  (~2.05 at the brand's +10%), so 150 words ≈ 73s. 95–105 words ≈ 45–53s.
+- Voice: edge-tts 7.x (no custom SSML; one sentence per beat for pauses; `boundary="WordBoundary"`). Arabic voices
+  read digits correctly (verified by transcription), so no digits→words step. Dates like "28 ديسمبر 2025" come
+  back as ONE timing token — subtitle code must not assume one token per whitespace word. Output
+  `assets/generated/voice/<script_id>.wav` + `.words.json` (`words[{text,start,end}]`, `beats[{role,start,end}]`);
+  `videos.voice_path` is repo-relative. >58s → one re-synthesis at a computed faster rate (≤ +25%), else `failed`.
 
-## Plan — Phase 5 (Voice)
+## Plan — Phase 6 (Assemble)
 
-Input: `scripts` with `status='passed'` and no `videos` row. Output: a `videos` row per script
-(`voice_path`, `duration_s`, `status='voiced'`) + audio in `assets/generated/voice/<script_id>.mp3` and word
-timings in `…/<script_id>.words.json` (Phase 6 needs them for karaoke subtitles).
-- `edge-tts` (free, keyless, needs network): brand voice/rate/pitch from `config.brands[].voice`. Custom SSML
-  is blocked by the service now — get pauses from punctuation / one beat per sentence break instead. Request
-  `WordBoundary` events for timings (newer edge-tts defaults to SentenceBoundary).
-- Loudness: ffmpeg `loudnorm` two-pass to `voice.target_lufs` (−14), then measure duration with ffprobe.
-- Duration gate 40–60s (`video.max_seconds`): too long → re-synthesize once at a faster rate (+10%); still too
-  long → `failed` with reason. Too short → keep, warn.
-- Check live how the Arabic voice reads digits ("17,000", "01:11", "953,531"); if badly, add a digits→words
-  step for TTS only (the script text in the DB and subtitles keep digits).
-- Tests: mock the synthesizer (no network), loudnorm command construction, duration gate paths, idempotent,
-  dry run. Output must land only under `assets/generated/` (guardrail for Phase 6).
+**Prerequisites (user):** `brew install ffmpeg-full` (keg-only; set `FFMPEG_BIN` to its `bin/ffmpeg`) — the
+current ffmpeg can't render subtitles. And `PEXELS_API_KEY` and/or `PIXABAY_API_KEY` (both free) for b-roll.
+Fallback if ffmpeg-full is refused: render each subtitle line to a transparent PNG with Pillow (+ raqm for
+Arabic shaping) and `overlay` it — more code, same result.
+
+Input: `videos` with `status='voiced'`. Output: `assets/generated/video/<video_id>.mp4`, H.264 1080×1920 30fps,
+≤ `video.max_seconds`, status `rendered`, `subtitle_path`, `broll_manifest` (clip ids, URLs, licenses).
+- **B-roll** (`src/assemble/broll.py`): per beat, search Pexels (then Pixabay) videos with the beat's
+  `broll_keywords`, portrait first, else landscape center-cropped; 1–2 clips per beat, cut to the beat span from
+  `.words.json`. Cache downloads in `assets/stock/` keyed by provider+id; never re-download. Record license/URL.
+- **Subtitles** (`subtitles.py`): ASS, Noto Naskh Arabic (download OFL font into `assets/fonts/`, committed),
+  2 lines max, bottom safe area (~y 1400–1650), RTL, word-by-word highlight from word timings. Group timing
+  tokens into lines of ~4–6 words, breaking at beat boundaries.
+- **Render** (`render.py`): concat b-roll → scale/crop 1080×1920 → burn ASS → voice + optional CC0 music from
+  `assets/music/` ducked under voice (sidechaincompress) → 2s brand end-card (placeholder logo/text).
+- **Guardrail**: the renderer resolves every input path and refuses anything outside `config.ALLOWED_MEDIA_DIRS`
+  (`assets/stock`, `assets/generated`) — plus fonts/music, which need adding to an allow-list for non-footage.
+- Tests: ASS builder (RTL text, line grouping, timing), guardrail rejects outside paths, broll search/cache with
+  MockTransport, ffmpeg command construction; one tiny real render (2s, color source) as the snapshot test.
 
 ## Later phases — watch-outs
 
