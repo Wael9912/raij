@@ -22,7 +22,8 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Free tiers return 429/503 under load; back off 1+2+4+8s before falling through.
 CLOUD_RETRIES = 4
-# Gemini models that returned 429 this process; skipped until the next run.
+PARSE_RETRIES = 1
+# Gemini models that returned 429 (quota) or 404 (retired) this process; skipped until the next run.
 _EXHAUSTED: set[str] = set()
 
 
@@ -58,18 +59,19 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
     if json_mode:
         body["generationConfig"]["responseMimeType"] = "application/json"
     # Free-tier quotas are per model (gemini-flash-latest allows only 20 requests/day), so
-    # fall through to the next model when one is out of quota or overloaded.
+    # fall through to the next model when one is out of quota, overloaded, or retired.
     models = [cfg.secret("GEMINI_MODEL", "gemini-flash-latest")] + cfg.get("llm.gemini_fallback_models", [])
     last: FetchError | None = None
-    for model in dict.fromkeys(models):
-        if model in _EXHAUSTED:
-            continue
+    live = [m for m in dict.fromkeys(models) if m not in _EXHAUSTED]
+    for i, model in enumerate(live):
+        # Only the last model gets the full backoff; otherwise an overloaded one is left fast.
+        retries = CLOUD_RETRIES if i == len(live) - 1 else 1
         try:
             resp = request(client, "POST", GEMINI_URL.format(model=model), json=body,
-                           headers={"x-goog-api-key": key}, retries=CLOUD_RETRIES)
+                           headers={"x-goog-api-key": key}, retries=retries)
         except FetchError as exc:
-            if "HTTP 429" in str(exc) or "HTTP 503" in str(exc):
-                if "HTTP 429" in str(exc):
+            if any(f"HTTP {code}" in str(exc) for code in (404, 429, 503)):
+                if "HTTP 503" not in str(exc):                  # out of quota or retired
                     _EXHAUSTED.add(model)
                 log.warning("Gemini %s unavailable, trying next model: %s", model, exc)
                 last = exc
@@ -146,17 +148,27 @@ def _run(cfg: Config, prompt: str, system: str | None, json_mode: bool,
             if provider is None:
                 failures.append(f"{name}: unknown provider")
                 continue
-            try:
-                out = parse(provider(cfg, client, prompt, system, json_mode))
-            except ProviderSkipped as exc:
-                failures.append(f"{name}: {exc}")
-                continue
-            except (FetchError, KeyError, IndexError, ValueError) as exc:
-                log.warning("LLM %s failed: %s", name, exc)
-                failures.append(f"{name}: {exc}")
-                continue
-            log.debug("LLM answered by %s", name)
-            return out
+            # Malformed output (e.g. a garbled \u escape in JSON) is usually a one-off, so ask the
+            # same provider once more; HTTP failures were already retried inside request().
+            for attempt in range(PARSE_RETRIES + 1):
+                try:
+                    raw = provider(cfg, client, prompt, system, json_mode)
+                except ProviderSkipped as exc:
+                    failures.append(f"{name}: {exc}")
+                    break
+                except (FetchError, KeyError, IndexError, ValueError) as exc:
+                    log.warning("LLM %s failed: %s", name, exc)
+                    failures.append(f"{name}: {exc}")
+                    break
+                try:
+                    out = parse(raw)
+                except (KeyError, IndexError, ValueError) as exc:
+                    log.warning("LLM %s returned unparseable output (attempt %d): %s", name, attempt + 1, exc)
+                    if attempt == PARSE_RETRIES:
+                        failures.append(f"{name}: unparseable output: {exc}")
+                    continue
+                log.debug("LLM answered by %s", name)
+                return out
     finally:
         if own_client:
             client.close()

@@ -80,9 +80,11 @@ video:
 
 llm:
   fallback_order: [gemini, groq, ollama]
-  # Tried after GEMINI_MODEL (.env) when it is out of free quota or overloaded. Quotas are
-  # per model; gemini-flash-latest's free tier is only 20 requests/day.
-  gemini_fallback_models: [gemini-flash-lite-latest, gemma-4-31b-it]
+  # Tried after GEMINI_MODEL (.env) when it is out of free quota, overloaded, or retired. Quotas
+  # are per model (gemini-flash-latest: 20 requests/day), so full flash models come before lite —
+  # lite writes noticeably weaker Arabic (typos, stray non-Arabic characters).
+  gemini_fallback_models: [gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash, gemini-3-flash-preview,
+                           gemini-flash-lite-latest, gemma-4-31b-it]
 
 schedule:
   run_daily_at: "07:00"

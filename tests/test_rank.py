@@ -85,6 +85,31 @@ def test_gemini_falls_through_models_on_daily_quota(env, monkeypatch):
     assert hits == ["big", "lite", "lite"]          # no backoff retries on a daily cap; skipped after
 
 
+def test_gemini_skips_retired_model(env, monkeypatch):
+    cfg, _, _ = env
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("GEMINI_MODEL", "old")
+    monkeypatch.setitem(cfg.data["llm"], "gemini_fallback_models", ["new"])
+    monkeypatch.setattr(llm, "_EXHAUSTED", set())
+
+    def handler(request):
+        if "/old:" in request.url.path:
+            return httpx.Response(404, json={"error": {"message": "model not found"}})
+        return _gemini_reply({"ok": True})
+
+    assert llm.complete_json(cfg, "q", client=httpx.Client(transport=httpx.MockTransport(handler))) == {"ok": True}
+
+
+def test_llm_reasks_same_provider_once_on_unparseable_output(env, monkeypatch):
+    cfg, _, _ = env
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setattr(llm, "_EXHAUSTED", set())
+    replies = iter(['{"a": "\\u06x"}', '{"a": 1}'])
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={
+        "candidates": [{"content": {"parts": [{"text": next(replies)}]}}]})))
+    assert llm.complete_json(cfg, "q", client=client) == {"a": 1}
+
+
 def test_llm_error_lists_every_provider(env):
     cfg, _, _ = env
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
