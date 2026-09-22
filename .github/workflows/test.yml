@@ -1,0 +1,22 @@
+# Tests on every push, on the same runner image the pipeline uses — includes a real ffmpeg render
+# (xfade, overlays, Arabic subtitles), so ffmpeg/raqm differences show up here, not in the 07:00 run.
+name: test
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pytest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends ffmpeg libfribidi0 libraqm0
+      - run: uv sync --frozen
+      - run: uv run pytest -q
