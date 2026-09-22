@@ -36,7 +36,14 @@ discovery:
     # Plain URLs or {url, region, name}. Examples:
     #   - {url: "https://feeds.bbci.co.uk/arabic/rss.xml", region: SD, name: "BBC Arabic"}
     #   - https://www.youtube.com/feeds/videos.xml?channel_id=<CHANNEL_ID>
-    feeds: []
+    # Keyless defaults so discovery works before any API keys are set.
+    feeds:
+      - {url: "https://feeds.bbci.co.uk/arabic/rss.xml", region: SD, name: "BBC Arabic"}
+      - {url: "https://www.skynewsarabia.com/rss", region: SA, name: "Sky News Arabia"}
+      - {url: "https://aitnews.com/feed/", region: SA, name: "AIT News"}
+      - {url: "https://feeds.bbci.co.uk/news/technology/rss.xml", region: US, name: "BBC Technology"}
+      - {url: "https://feeds.arstechnica.com/arstechnica/index", region: US, name: "Ars Technica"}
+      - {url: "https://www.sciencedaily.com/rss/top/science.xml", region: US, name: "ScienceDaily"}
 
 ranking:
   weights: { view_velocity: 0.5, engagement: 0.3, recency: 0.2 }
