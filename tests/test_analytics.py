@@ -218,8 +218,9 @@ def test_publish_skips_while_another_publish_runs(env):
     assert conn.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
 
 
-def test_service_plists_and_install(env, tmp_path):
+def test_service_plists_and_install(env, tmp_path, monkeypatch):
     cfg, _, _ = env
+    monkeypatch.setattr(service, "linux", lambda: False)          # the launchd path, even when CI runs on Linux
     specs = service.plists(cfg)
     assert specs["com.raij.bot"]["KeepAlive"] is True and specs["com.raij.bot"]["ProgramArguments"][-1] == "bot"
     assert specs["com.raij.daily"]["StartCalendarInterval"] == {"Hour": 7, "Minute": 0}
