@@ -143,6 +143,22 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
    (20 req/day on flash-latest, fallbacks after) is the likely bottleneck with 5 picks/day.
 3. Later: YouTube Data API key for YouTube discovery; Pixabay key; CC0 music in `assets/music/`.
 
+## Server ($0) — Oracle Cloud Always Free (owner's choice, 2026-09-22)
+
+Target: Ubuntu 24.04 on VM.Standard.A1.Flex (ARM, 4 OCPU / 24 GB), `ubuntu@<ip>`, repo at `~/social-media-automation`.
+- `deploy/setup-server.sh` (on server): apt ffmpeg + libfribidi0/libraqm0 (Pillow raqm), TZ Africa/Cairo, uv, `uv sync`,
+  shaping check, pytest. `service.py` on Linux writes systemd units to /etc/systemd/system via sudo:
+  `raij-bot.service` (Restart=always), `raij-daily.timer` (`OnCalendar=… 07:00 Africa/Cairo`, Persistent),
+  `raij-publish.timer` (every 30 min). Logs still `data/logs/*.log`.
+- `deploy/push.sh` (on Mac; `RAIJ_SERVER`, `RAIJ_SSH_KEY` in the Mac's .env): rsync code only, never the server's
+  data/ or keys, then `uv sync` + restart services. `--with-data` = one-time migration (data/, .env,
+  client_secret.json, generated media).
+- **Cutover order**: Mac `uninstall-services` FIRST (one Telegram poller only, DB quiescent) → `push.sh --with-data`
+  → `setup-server.sh` → `install-services` on server → check bot log + `/status`. After cutover the server's DB is
+  the source of truth; "check" = ssh + read logs/DB there.
+- Owner should upgrade the tenancy to Pay-As-You-Go (+$1 budget alert): Always Free stays $0, but idle
+  trial-account instances can be reclaimed (our VM is idle most of the day).
+
 ## Phase 9 (Analytics + runner) — as built
 
 - `report` stage (`src/analytics/`): per platform collectors → `metrics` (one row per post per UTC day, replaced on

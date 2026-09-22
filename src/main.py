@@ -117,8 +117,12 @@ def cmd_report(cfg, conn, args) -> int:
 def cmd_install_services(cfg, conn, args) -> int:
     from src import service
     if args.dry_run:
-        for label, spec in service.plists(cfg).items():
-            log.info("[dry run] %s: %s", label, " ".join(spec["ProgramArguments"][-1:]))
+        if service.linux():
+            for name, body in service.units(cfg).items():
+                log.info("[dry run] %s:\n%s", name, body)
+        else:
+            for label, spec in service.plists(cfg).items():
+                log.info("[dry run] %s: %s", label, " ".join(spec["ProgramArguments"][-1:]))
         return 0
     for path in service.install(cfg):
         log.info("Installed %s", path)

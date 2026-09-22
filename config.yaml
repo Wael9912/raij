@@ -118,6 +118,7 @@ llm:
 
 schedule:
   run_daily_at: "07:00"            # local time; launchd job com.raij.daily (install-services)
+  timezone: Africa/Cairo           # server (systemd) timer runs at run_daily_at in this zone
 
 analytics:
   track_days: 30                   # keep pulling metrics for posts this recent

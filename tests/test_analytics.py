@@ -237,3 +237,22 @@ def test_service_plists_and_install(env, tmp_path):
     assert len(paths) == 3 and plistlib.loads(paths[0].read_bytes())["Label"] == "com.raij.bot"
     assert [c[1] for c in cmds] == ["bootout", "bootstrap"] * 3
     assert service.uninstall(run=run, agents=agents) == list(service.LABELS) and not list(agents.iterdir())
+
+
+def test_systemd_units_for_linux_server(env):
+    cfg, _, _ = env
+    u = service.units(cfg, user="ubuntu")
+    assert set(u) == set(service.units_names())
+    assert "Restart=always" in u["raij-bot.service"] and "User=ubuntu" in u["raij-bot.service"]
+    assert "run python -m src.main bot" in u["raij-bot.service"] and f"WorkingDirectory={cfg.root}" in u["raij-bot.service"]
+    assert "OnCalendar=*-*-* 07:00:00 Africa/Cairo" in u["raij-daily.timer"] and "Persistent=true" in u["raij-daily.timer"]
+    assert "OnUnitInactiveSec=30min" in u["raij-publish.timer"] and "Type=oneshot" in u["raij-publish.service"]
+    cmds = []
+
+    def run(cmd):
+        cmds.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    service._install_systemd(cfg, run, cfg.root / "units")
+    assert sum(c[:2] == ["sudo", "install"] for c in cmds) == 5
+    assert ["sudo", "systemctl", "enable", "--now", "raij-bot.service", "raij-daily.timer", "raij-publish.timer"] in cmds
