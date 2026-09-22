@@ -1,0 +1,27 @@
+# Plan / brief docs (kept local only)
+CLAUDE_CODE_BUILD_BRIEF*.md
+
+# Secrets
+.env
+*.token.json
+client_secret*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Runtime data
+data/*
+!data/.gitkeep
+
+# Assets (fonts are committed; everything else is generated/cached)
+assets/music/*
+assets/stock/*
+assets/generated/*
+!assets/*/.gitkeep
+
+# OS
+.DS_Store

@@ -1,0 +1,56 @@
+# Ra'ij pipeline configuration. Secrets live in .env, never here.
+
+brands:
+  - id: raij
+    name: "رائج"
+    language: ar
+    tone: "Sudanese-friendly, MSA-lean, warm and curious"
+    voice:
+      name: ar-EG-ShakirNeural     # alt: ar-SA-HamedNeural
+      rate: "+0%"
+      pitch: "+0Hz"
+    subtitle_font: "Noto Naskh Arabic"
+    platforms: [instagram, facebook, youtube, tiktok_export]
+
+discovery:
+  regions: [SD, EG, SA, US]
+  youtube:
+    enabled: true
+    daily_quota_budget: 8000       # units; API default is 10,000/day
+    shorts_queries: ["اكتشاف", "حقائق", "tech news", "life hack"]
+  reddit:
+    enabled: true
+    subreddits: [todayilearned, technology, worldnews, LifeProTips, sports]
+    limit_per_sub: 25
+  trends:
+    enabled: true
+    geos: [SD, EG, SA, US]
+  rss:
+    enabled: true
+    feeds: []
+
+ranking:
+  weights: { view_velocity: 0.5, engagement: 0.3, recency: 0.2 }
+  top_n: 5
+  categories: [news-lite, tech, life-hack, sports, culture, wow-facts]
+  flagged_categories: [political]  # never auto-scheduled
+
+script:
+  min_words: 110
+  max_words: 150
+  similarity_threshold: 0.35       # above this vs source transcript → rewrite once, else reject
+
+voice:
+  target_lufs: -14
+
+video:
+  width: 1080
+  height: 1920
+  max_seconds: 60
+  fps: 30
+
+llm:
+  fallback_order: [gemini, groq, ollama]
+
+schedule:
+  run_daily_at: "07:00"
