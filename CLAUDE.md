@@ -15,11 +15,14 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 4 Script | ✅ done | `d860e76`, `dde9d8c` | live: 5/5 passed (3.5/3.6-flash); Arabic-source similarity 0.06–0.10; number gate caught 211→201, 953,531→995,000 |
 | 5 Voice | ✅ done | `5aba7c1` | live: 5/5 voiced, 44–53s at +10%, −14.2 LUFS / −1.5 dBTP; Gemini transcription of a clip matched the script word for word |
 | 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9`, `cf0b0b3` | live with Pexels: 5/5 rendered, 45–54s, 7–10 clips, 18–37 MB; faceless b-roll + licensed Commons photos of public figures |
-| 7 Telegram review | 🟡 built | `d27ce54` | mocked-Telegram tests + real edit/new-b-roll regeneration run (Gemini, edge-tts, Pexels, ffmpeg) on a DB copy. **Live Telegram blocked: no `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`** |
-| 8 Publish | ⏭ next | | see plan below |
+| 7 Telegram review | ✅ done | `d27ce54`, `47b385c` | live with @Raig88_bot: approve/reject/edit/new b-roll all used by the owner; #13 #17 #19 approved, #14 #16 rejected. Late-tap bug found live + fixed |
+| 6.5 Visual polish | ⏭ **next** | | owner feedback 2026-09-22 — see "Next up" below. Do this before Phase 8 |
+| 8 Publish | ⬜ | | see plan below |
 | 9 Analytics + runner | ⬜ | | |
 
-Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`. Missing: YouTube, Reddit, Groq, Pixabay, Telegram, Meta, YouTube OAuth.
+Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
+Missing: YouTube, Reddit, Groq, Pixabay, Meta, YouTube OAuth. The review `bot` is NOT a service yet (Phase 9):
+start it with `uv run python -m src.main bot` whenever reviews are pending — taps queue until it runs.
 Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** — subtitles are drawn in Python instead.
 
 ## Commands
@@ -95,6 +98,10 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   news-agency photos (copyright). Credit drawn on the frame and kept in `videos.notes.credits` →
   **Phase 7/8 must append credits to the caption** (CC BY requirement). No free photo → faceless (e.g. Accorsi).
   Known gap: occluded faces (inside a helmet) can pass the detector — human review.
+- Working with the owner: terse commands ("start", "check" = poll the bot/DB and report). They paste API keys
+  into chat — validate each against its own service only, save to `.env` without echoing, never print keys.
+  Always *look* at real output (extract frames → contact sheet → Read the image; transcribe audio via Gemini)
+  before calling a stage done — most real bugs this project had were only visible that way.
 - Review: plain Bot API over httpx (`review/telegram.py`; token only in the URL path, never in errors). `review`
   sends video (preview re-encode if >50 MB) + caption (hook, description, tags, sources, credits) + script
   message; video → `in_review` with `review_msg_id`. `bot` long-polls; offset in `control.telegram_offset`,
@@ -104,6 +111,38 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   (`<script>_v<video>.wav`) → assemble → new video row (`parent_id`) → resent; old video `superseded`.
   New b-roll: same voice, `assemble_video(exclude=old stock ids)`. Re-voice: toggles brand `voice.alt`/`name`.
   Regeneration failure → message + original's buttons restored.
+
+## Next up — Phase 6.5 Visual polish (owner feedback, 2026-09-22)
+
+The owner watched the first videos in Telegram. Four requests, all in `src/assemble/`:
+
+1. **Arabic subtitle font looks bad → use a font trending on Arabic Reels/TikTok.** Bold, rounded, modern sans —
+   candidates (all OFL on Google Fonts): **Cairo Black/ExtraBold**, **Tajawal ExtraBold/Black**, **Almarai
+   ExtraBold**, **Lalezar** (display), **IBM Plex Sans Arabic Bold**. Render 2–3 side by side on real frames
+   and pick with the owner (send a comparison image to Telegram or show it in chat).
+   ⚠️ Shaping caveat: subtitles use arabic-reshaper → *presentation-form* codepoints (U+FB50–FEFF). Many modern
+   fonts (Cairo, Tajawal…) lack those glyphs → boxes. Either verify the font has them (fontTools cmap check), or
+   switch to real HarfBuzz shaping: `brew install libraqm` (small) — Pillow's wheel dlopens it; then
+   `ImageFont.Layout.RAQM` with `direction="rtl"` renders logical text directly (drop reshaper/bidi). Prefer
+   raqm if the owner OKs the install. Also style: bigger (≈90–100px), thicker stroke or a soft rounded box,
+   keep word highlight (maybe highlight = colored pill behind the active word).
+2. **No transitions between clips → add them.** Replace the plain `concat` with an `xfade` chain (0.25–0.4s;
+   `fade`/`smoothleft`/`slideup`/`zoomin`, varied per cut) — offsets = cumulative segment lengths minus overlap,
+   so extend each segment by the overlap to keep beat timing and total length. Photo stills: slow zoom already.
+3. **No visual hook → add an on-screen hook title in the first ~2.5s.** Big 2-line headline (≤6 words), center
+   screen, animated in (scale/pop via overlay with `enable`), then subtitles take over. Source: add
+   `"hook_title"` (≤6 Arabic words, punchier than the spoken hook) to `script_write.txt` + `write.validate`.
+   Consider a thin progress bar at the top as retention bait.
+4. **No logo → channel logo + series name.** Persistent small channel logo/wordmark "رائج" (top corner, ~70%
+   opacity) through the video, plus a **series badge** — e.g. "هل تعلم؟" (did you know), "اكتشاف" (discovery),
+   "عالم التقنية", "رياضة في دقيقة", "حكايات" — shown with the hook title and on the end card. Map series from
+   category in config (`brands[].series: {wow-facts: "هل تعلم؟", tech: "عالم التقنية", sports: …,
+   culture: "حكايات", news-lite: "رائج اليوم", life-hack: "حيلة اليوم"}`); let the script LLM override with a
+   `series` field if a better fit. Logo: use `assets/brand/logo.png` if the owner supplies one, else generate
+   a clean wordmark PNG (Pillow) in brand colors (yellow #FFD400 on dark). Ask the owner for series names/colors.
+
+Re-render the approved videos (#13, #17, #19) with the polish and send them to Telegram for a fresh look —
+don't touch their approvals until the owner re-approves (new video rows via the normal regeneration path).
 
 ## Plan — Phase 8 (Publish)
 
