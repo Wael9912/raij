@@ -17,7 +17,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9`, `cf0b0b3` | live with Pexels: 5/5 rendered, 45–54s, 7–10 clips, 18–37 MB; faceless b-roll + licensed Commons photos of public figures |
 | 7 Telegram review | ✅ done | `d27ce54`, `47b385c` | live with @Raig88_bot: approve/reject/edit/new b-roll all used by the owner; #13 #17 #19 approved, #14 #16 rejected. Late-tap bug found live + fixed |
 | 6.5 Visual polish | ✅ done | `398a58c` | Cairo Black via raqm, xfade transitions, hook title + series badge, logo, progress bar. #13/#17/#19 re-rendered as #20/#21/#22 → **awaiting owner re-approval** |
-| 8 Publish | 🟡 built | (this commit) | all four publishers built + mock-tested; live: TikTok export of #20 #21 ✅. **YouTube/IG/FB never run live** — no Meta keys, no `client_secret.json` |
+| 8 Publish | 🟡 built | `191dbef` | all four publishers built + mock-tested; live: TikTok export of #20 #21 ✅. **YouTube/IG/FB never run live** — no Meta keys, no `client_secret.json` |
 | 9 Analytics + runner | ⬜ | | |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
