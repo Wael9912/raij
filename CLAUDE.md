@@ -14,13 +14,13 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 3 Extract | ✅ done | `7672048`, `affe555` | live: 5/5 story cards (3 trends via news articles, 2 RSS articles). yt-dlp subs verified live on a real video; whisper fallback mocked only (`uv sync --group whisper` not installed) |
 | 4 Script | ✅ done | `d860e76`, `dde9d8c` | live: 5/5 passed (3.5/3.6-flash); Arabic-source similarity 0.06–0.10; number gate caught 211→201, 953,531→995,000 |
 | 5 Voice | ✅ done | `5aba7c1` | live: 5/5 voiced, 44–53s at +10%, −14.2 LUFS / −1.5 dBTP; Gemini transcription of a clip matched the script word for word |
-| 6 Assemble | ⏭ next | | see plan below — **needs** `ffmpeg-full` (libass) + a Pexels or Pixabay key |
-| 7 Telegram review | ⬜ | | |
+| 6 Assemble | 🟡 built | `7223ffd` | real render verified (live voice + generated test clips, subs in sync). **Live b-roll blocked: no Pexels/Pixabay key** — run `assemble` once a key is in `.env` |
+| 7 Telegram review | ⏭ next | | see plan below — needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
 | 8 Publish | ⬜ | | |
 | 9 Analytics + runner | ⬜ | | |
 
 Keys in `.env`: `GEMINI_API_KEY` only. Missing: YouTube, Reddit, Groq, Pexels, Pixabay, Telegram, Meta, YouTube OAuth.
-Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** (subtitles impossible) → Phase 6.
+Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** — subtitles are drawn in Python instead.
 
 ## Commands
 
@@ -78,28 +78,34 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   back as ONE timing token — subtitle code must not assume one token per whitespace word. Output
   `assets/generated/voice/<script_id>.wav` + `.words.json` (`words[{text,start,end}]`, `beats[{role,start,end}]`);
   `videos.voice_path` is repo-relative. >58s → one re-synthesis at a computed faster rate (≤ +25%), else `failed`.
+- Assemble: **no libass** — subtitles are PNGs from Pillow with pure-Python shaping (arabic-reshaper +
+  python-bidi; Pillow's wheel lacks raqm), per-word RTL layout with LTR runs for Latin/digits, Noto Naskh Arabic
+  Bold + Noto Sans Bold fallback (bundled, OFL). One PNG per spoken word (highlight), played via the concat
+  demuxer as a single overlay. Cues ≤2 balanced lines, ≤7 words, never across a beat or a >0.6s pause.
+  Subtitle band top y=1250 (clear of platform UI). B-roll: Pexels→Pixabay, portrait first, ≤2 clips/beat,
+  `-stream_loop` so short clips loop. Guardrail = `render.guard()` against `config.ALLOWED_MEDIA_SUBDIRS`
+  (stock, generated, music), symlinks resolved. Output `assets/generated/video/<video_id>.mp4` + `.srt`.
+  Test-pattern footage made a 60 MB file; real footage is smaller, but Telegram bots can only send ≤50 MB.
 
-## Plan — Phase 6 (Assemble)
+## Plan — Phase 7 (Telegram review)
 
-**Prerequisites (user):** `brew install ffmpeg-full` (keg-only; set `FFMPEG_BIN` to its `bin/ffmpeg`) — the
-current ffmpeg can't render subtitles. And `PEXELS_API_KEY` and/or `PIXABAY_API_KEY` (both free) for b-roll.
-Fallback if ffmpeg-full is refused: render each subtitle line to a transparent PNG with Pillow (+ raqm for
-Arabic shaping) and `overlay` it — more code, same result.
+**Prerequisites (user):** `TELEGRAM_BOT_TOKEN` (@BotFather) + `TELEGRAM_CHAT_ID` (SETUP.md §4). First, once a
+stock key exists, run `assemble` live and look at the 5 real videos (b-roll relevance, crop, file size).
 
-Input: `videos` with `status='voiced'`. Output: `assets/generated/video/<video_id>.mp4`, H.264 1080×1920 30fps,
-≤ `video.max_seconds`, status `rendered`, `subtitle_path`, `broll_manifest` (clip ids, URLs, licenses).
-- **B-roll** (`src/assemble/broll.py`): per beat, search Pexels (then Pixabay) videos with the beat's
-  `broll_keywords`, portrait first, else landscape center-cropped; 1–2 clips per beat, cut to the beat span from
-  `.words.json`. Cache downloads in `assets/stock/` keyed by provider+id; never re-download. Record license/URL.
-- **Subtitles** (`subtitles.py`): ASS, Noto Naskh Arabic (download OFL font into `assets/fonts/`, committed),
-  2 lines max, bottom safe area (~y 1400–1650), RTL, word-by-word highlight from word timings. Group timing
-  tokens into lines of ~4–6 words, breaking at beat boundaries.
-- **Render** (`render.py`): concat b-roll → scale/crop 1080×1920 → burn ASS → voice + optional CC0 music from
-  `assets/music/` ducked under voice (sidechaincompress) → 2s brand end-card (placeholder logo/text).
-- **Guardrail**: the renderer resolves every input path and refuses anything outside `config.ALLOWED_MEDIA_DIRS`
-  (`assets/stock`, `assets/generated`) — plus fonts/music, which need adding to an allow-list for non-footage.
-- Tests: ASS builder (RTL text, line grouping, timing), guardrail rejects outside paths, broll search/cache with
-  MockTransport, ffmpeg command construction; one tiny real render (2s, color source) as the snapshot test.
+- Plain Bot API over httpx (`src/review/telegram.py`) instead of python-telegram-bot: one less dependency, and
+  MockTransport tests like every other stage. Long polling (`getUpdates`), no webhook/server needed.
+- `review`: for each `rendered` video with no approval → `sendVideo` (≤50 MB; if bigger, re-encode a preview
+  copy with `-maxrate 5M` into `assets/generated/video/<id>.preview.mp4`) with caption = hook + description +
+  hashtags + sources, and the full Arabic script as a follow-up message; inline keyboard
+  [✅ Approve] [❌ Reject] [✏️ Edit script] [🔁 New b-roll] [🎙 Re-voice]. Store `telegram_msg_id`.
+- `bot` (long-running) handles callbacks — **only from `TELEGRAM_CHAT_ID`**, everything else ignored:
+  approve/reject → `approvals` row (`decided_by` = Telegram user id); edit → ForceReply for the note →
+  `write_script(edit_note=…)` → voice → assemble → resend; new b-roll → assemble again excluding the previous
+  manifest's clip ids; re-voice → alternate brand voice (e.g. ar-SA-HamedNeural) → assemble → resend.
+  Commands `/pause`, `/resume`, `/status` (counts per stage). Every state in the DB, so restarts lose nothing.
+- Regenerated versions supersede the old video row (keep history); approvals point at the exact video shown.
+- Tests: callback auth rejects other chats, each button's DB transition, edit-note flow, oversized-video preview
+  path, pause/resume, dry run (prints what would be sent).
 
 ## Later phases — watch-outs
 
