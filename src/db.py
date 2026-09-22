@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     rank_reason   TEXT,
     selected_at   TEXT,                             -- UTC; when rank picked it for the day
     topic         TEXT,                             -- LLM story slug; one pick per topic
-    status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged|extracted|extract_failed
+    status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged|extracted|extract_failed|scripted|script_rejected
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (source, external_id)
@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS scripts (
     similarity      REAL,
     status          TEXT NOT NULL DEFAULT 'draft',  -- draft|passed|rejected|superseded
     edit_note       TEXT,
+    notes           TEXT,                           -- JSON: words, gate result, reject reason, shared phrases
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -151,6 +152,7 @@ MIGRATIONS = [
     ("candidates", "selected_at", "TEXT"),
     ("candidates", "topic", "TEXT"),
     ("stories", "sources", "TEXT"),
+    ("scripts", "notes", "TEXT"),
 ]
 
 
