@@ -11,8 +11,8 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 0 Scaffold | ✅ done | `94c9c31` | config loader, SQLite schema, CLI, SETUP.md draft |
 | 1 Discovery | ✅ done | `3c5728d`, `a877314` | live: 141 candidates/run keyless (Trends + 6 RSS). YouTube/Reddit coded + tested with mocks, **never run live** (no keys yet) |
 | 2 Rank & Select | ✅ done | `40288ba`, `e59f351` | live with Gemini: 30 screened → 5 selected, political flagged |
-| 3 Extract | ⏭ next | | see plan below |
-| 4 Script | ⬜ | | |
+| 3 Extract | ✅ done | `4a1d5e1`+next | live: 5/5 story cards (3 trends via news articles, 2 RSS articles). yt-dlp subs verified live on a real video; whisper fallback mocked only (`uv sync --group whisper` not installed) |
+| 4 Script | ⏭ next | | see plan below |
 | 5 Voice | ⬜ | | |
 | 6 Assemble | ⬜ | | |
 | 7 Telegram review | ⬜ | | |
@@ -54,23 +54,30 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   (same story from two outlets isn't picked twice); max 2 per category; `political` → `flagged`.
 - Daily selection is idempotent per UTC day (`candidates.selected_at`); report in `data/rank/<date>.json`.
 - `GEMINI_MODEL=gemini-flash-latest` (gemini-2.5-flash is closed to new keys). Cloud LLMs retry 4× with backoff.
+- Gemini free quotas are **per model**, and gemini-flash-latest (→ 3.8-flash) allows only 20 req/day. `_gemini`
+  falls through `llm.gemini_fallback_models` (flash-lite, gemma-4-31b-it) on 429/503; daily-cap 429s aren't retried.
+- Extract: story cards are **English** (Arabic is written in Phase 4). Source text: trafilatura (default mode —
+  `favor_precision` dropped real articles), browser UA; trends read up to 3 linked articles that yield ≥400 chars,
+  else headlines. Candidate → `extracted`; no usable text / LLM says unusable → `extract_failed`; LLM outage
+  leaves it `selected` for the next run. `stories.sources` = URLs used; cards also in `data/extract/<date>.json`.
+- faster-whisper is an optional dep group (heavy for 8 GB); only used when a video has no subs and ≤900s.
 
-## Plan — Phase 3 (Extract)
+## Plan — Phase 4 (Script)
 
-Input: today's `status='selected'` candidates. Output: one `stories` row each (hook, 3–5 key facts,
-claims list, why-trending); candidate status → `extracted`. **No media file may persist.**
-
-Source text differs by candidate type — most picks are articles/trends, not videos:
-- **youtube**: yt-dlp `--write-auto-subs --skip-download` (ar/en) → parse VTT to plain text.
-  Fallback: audio to a temp dir → faster-whisper (CPU, int8, `small`) → delete audio in `finally`.
-- **rss**: fetch the article URL, extract main text (e.g. `trafilatura`), fall back to feed summary.
-- **trends**: fetch the linked news articles in `raw.news` (top 2–3), concatenate.
-- **reddit**: selftext, else the linked URL's article text.
-
-Then `src/prompts/story_distill.txt` → `complete_json` → story card. Store source text in
-`stories.transcript` (for Phase 4's similarity check) and `transcript_src` (`autosubs|whisper|article|news|selftext`).
-Tests: VTT parsing, temp-audio deletion even on error, per-type routing with mocks, dry run.
-Open question: story cards should be written in Arabic or English? (default: English card, Arabic script in Phase 4).
+Input: `stories` with no `scripts` row. Output: one `scripts` row per story per brand (start with 1 brand).
+- Prompt `src/prompts/script_ar.txt` gets **only the story card** (hook, key_facts, claims, why_trending) +
+  brand tone from `config.brands` — never `stories.transcript`.
+- Structure: hook (≤3s) → body beats → payoff → CTA, `script.min_words`–`max_words` (110–150) Arabic words.
+  Beats JSON `[{text, broll_keywords}]` (English stock-search keywords, 2–4 per beat); EN description + hashtags.
+- Similarity gate vs `stories.transcript`: cheap, offline — char n-gram (e.g. 4-gram) Jaccard/containment on
+  normalized Arabic (strip diacritics/tatweel, unify alef/yaa/taa marbuta). English sources need a cross-lingual
+  check: consider translating the script's facts isn't needed — compare only when source is Arabic, else rely on
+  the card-only prompt (note it in `scripts.similarity` as NULL). Above `script.similarity_threshold` → rewrite
+  once with a "rephrase more freely" note → else status `rejected`.
+- Validate word count and beat shape; out-of-range → one retry, then `rejected` with reason in notes.
+- Status `passed` when gate + validation pass. Tests: Arabic normalization, n-gram similarity, gate → rewrite →
+  reject path, prompt never contains transcript text, dry run.
+- LLM budget: ≥5 calls/day (+rewrites); fits flash-lite/Gemma fallback. Consider a free Groq key as backup.
 
 ## Later phases — watch-outs
 

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     rank_reason   TEXT,
     selected_at   TEXT,                             -- UTC; when rank picked it for the day
     topic         TEXT,                             -- LLM story slug; one pick per topic
-    status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged
+    status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged|extracted|extract_failed
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (source, external_id)
@@ -45,13 +45,15 @@ CREATE TABLE IF NOT EXISTS stories (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     candidate_id    INTEGER NOT NULL REFERENCES candidates(id),
     transcript      TEXT,                           -- kept only for similarity check
-    transcript_src  TEXT,                           -- autosubs|whisper
+    transcript_src  TEXT,                           -- autosubs|whisper|article|news|summary|headlines|selftext
+    sources         TEXT,                           -- JSON array of URLs the text came from
     hook            TEXT,
     key_facts       TEXT,                           -- JSON array
     claims          TEXT,                           -- JSON array
     why_trending    TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS stories_candidate ON stories (candidate_id);
 
 CREATE TABLE IF NOT EXISTS scripts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,6 +150,7 @@ MIGRATIONS = [
     ("candidates", "last_seen_at", "TEXT"),
     ("candidates", "selected_at", "TEXT"),
     ("candidates", "topic", "TEXT"),
+    ("stories", "sources", "TEXT"),
 ]
 
 

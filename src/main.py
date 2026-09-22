@@ -41,9 +41,15 @@ def cmd_rank(cfg, conn, args) -> int:
     return rank(cfg, conn, dry_run=args.dry_run)
 
 
+def cmd_extract(cfg, conn, args) -> int:
+    from src.extract.runner import extract
+    return extract(cfg, conn, dry_run=args.dry_run)
+
+
 HANDLERS = {name: _not_implemented(name) for name in STAGES}
 HANDLERS["discover"] = cmd_discover
 HANDLERS["rank"] = cmd_rank
+HANDLERS["extract"] = cmd_extract
 
 
 def cmd_init_db(cfg, conn, args) -> int:

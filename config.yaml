@@ -55,6 +55,15 @@ ranking:
   categories: [news-lite, tech, life-hack, sports, culture, wow-facts]
   flagged_categories: [political]  # never auto-scheduled
 
+extract:
+  max_articles: 3                  # trends: read up to this many linked news articles
+  min_article_chars: 400           # shorter extracted page text counts as unreadable
+  min_source_chars: 120            # below this there's no story to distill → extract_failed
+  max_prompt_chars: 12000          # source text sent to the LLM
+  max_transcript_chars: 20000      # source text kept for the Phase 4 similarity gate
+  whisper_model: small             # faster-whisper, CPU int8; only when a video has no subtitles
+  whisper_max_seconds: 900
+
 script:
   min_words: 110
   max_words: 150
