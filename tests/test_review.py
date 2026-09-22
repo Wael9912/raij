@@ -176,7 +176,7 @@ def test_approve_and_reject(env, act, decision):
     appr = conn.execute("SELECT decision, decided_by, telegram_msg_id FROM approvals").fetchone()
     assert tuple(appr) == (decision, "7", 101)
     assert conn.execute("SELECT status FROM videos").fetchone()[0] == decision
-    assert tg.methods()[0] == "editMessageReplyMarkup"                  # buttons removed first
+    assert tg.methods()[:2] == ["answerCallbackQuery", "editMessageReplyMarkup"]   # ack, then buttons off
     h.handle(_cb(f"{act}:1", cid="cb2"))                                 # double tap
     assert conn.execute("SELECT count(*) FROM approvals").fetchone()[0] == 1
     assert tg.calls[-1] == ("answerCallbackQuery", {"callback_query_id": "cb2", "text": "Already handled"})
@@ -305,3 +305,14 @@ def test_dry_run(env, caplog):
     caplog.set_level("INFO")
     assert runner.review(cfg, conn, dry_run=True) == 0
     assert "1 rendered video" in caplog.text and conn.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
+
+
+def test_stale_tap_still_counts(env):
+    """A tap handled after a long regeneration can't be acknowledged ('query is too old'),
+    but the decision must still be recorded."""
+    cfg, conn, _ = env
+    _in_review(cfg, conn)
+    tg = FakeTelegram(fail="answerCallbackQuery")
+    _handler(cfg, conn, tg).handle(_cb("ap:1"))
+    assert conn.execute("SELECT status FROM videos").fetchone()[0] == "approved"
+    assert conn.execute("SELECT decision FROM approvals").fetchone()[0] == "approved"

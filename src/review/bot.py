@@ -69,36 +69,42 @@ class Handler:
                 return
             self.on_message(msg)
 
+    def _soft(self, fn: Callable, *args: Any) -> None:
+        """Telegram cosmetics (the tap's toast, removing buttons) must never block the decision itself:
+        a callback answered after a long regeneration is 'too old' and Telegram rejects it."""
+        try:
+            fn(*args)
+        except TelegramError as exc:
+            log.info("Ignoring cosmetic Telegram failure: %s", exc)
+
     def on_button(self, cb: dict[str, Any]) -> None:
         parsed = cards.parse_callback(cb.get("data", ""))
         if not parsed:
-            self.bot.answer(cb["id"], "Unknown action")
+            self._soft(self.bot.answer, cb["id"], "Unknown action")
             return
         act, vid = parsed
         row = self.conn.execute("SELECT status, review_msg_id FROM videos WHERE id = ?", (vid,)).fetchone()
         if row is None or row["status"] != "in_review":
-            self.bot.answer(cb["id"], "Already handled")
+            self._soft(self.bot.answer, cb["id"], "Already handled")
             return
         user = str((cb.get("from") or {}).get("id", ""))
-        # Buttons come off first so a double tap can't act twice.
-        self.bot.edit_markup(self.chat, row["review_msg_id"], None)
+        toast = {"ap": "✅ Approved", "rj": "❌ Rejected", "ed": "Send your edit note"}.get(act, "⏳ Working on it…")
+        self._soft(self.bot.answer, cb["id"], toast)
+        # Buttons come off first so a double tap can't act twice (the status check above also guards it).
+        self._soft(self.bot.edit_markup, self.chat, row["review_msg_id"], None)
         if act in ("ap", "rj"):
             decision = cards.ACTIONS[act]
             self._approval(vid, decision, user, row["review_msg_id"])
             self.conn.execute("UPDATE videos SET status = ? WHERE id = ?", (decision, vid))
             self.conn.commit()
-            self.bot.answer(cb["id"], "✅ Approved" if act == "ap" else "❌ Rejected")
-            self.bot.send_message(self.chat, f"{'✅ Approved' if act == 'ap' else '❌ Rejected'} #{vid}",
-                                  reply_to_message_id=row["review_msg_id"])
+            self.bot.send_message(self.chat, f"{toast} #{vid}", reply_to_message_id=row["review_msg_id"])
         elif act == "ed":
-            self.bot.answer(cb["id"], "Send your edit note")
             prompt = self.bot.send_message(self.chat, f"✏️ What should change in #{vid}? Reply with your note.",
                                            reply_markup={"force_reply": True, "selective": True},
                                            reply_to_message_id=row["review_msg_id"])
             db.set_flag(self.conn, "pending_edit", json.dumps({"video_id": vid, "prompt": prompt["message_id"],
                                                                "user": user}))
         else:
-            self.bot.answer(cb["id"], "⏳ Working on it…")
             self._approval(vid, cards.ACTIONS[act], user, row["review_msg_id"])
             self._regenerate(vid, new_broll=act == "nb", revoice=act == "rv")
 
@@ -149,7 +155,7 @@ class Handler:
                 self.conn.commit()
             self.bot.send_message(self.chat, f"⚠️ Couldn't regenerate #{vid}: {str(exc)[:300]}\n"
                                              f"The original is back up for review.")
-            self.bot.edit_markup(self.chat, ctx["review_msg_id"], cards.keyboard(vid))
+            self._soft(self.bot.edit_markup, self.chat, ctx["review_msg_id"], cards.keyboard(vid))
             return
         self.conn.execute("UPDATE videos SET status = 'superseded' WHERE id = ?", (vid,))
         self.conn.commit()
