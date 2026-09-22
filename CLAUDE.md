@@ -15,7 +15,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 4 Script | ✅ done | `d860e76`, `dde9d8c` | live: 5/5 passed (3.5/3.6-flash); Arabic-source similarity 0.06–0.10; number gate caught 211→201, 953,531→995,000 |
 | 5 Voice | ✅ done | `5aba7c1` | live: 5/5 voiced, 44–53s at +10%, −14.2 LUFS / −1.5 dBTP; Gemini transcription of a clip matched the script word for word |
 | 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9`, `cf0b0b3` | live with Pexels: 5/5 rendered, 45–54s, 7–10 clips, 18–37 MB; faceless b-roll + licensed Commons photos of public figures |
-| 7 Telegram review | 🟡 built | next commit | mocked-Telegram tests + real edit/new-b-roll regeneration run (Gemini, edge-tts, Pexels, ffmpeg) on a DB copy. **Live Telegram blocked: no `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`** |
+| 7 Telegram review | 🟡 built | `d27ce54` | mocked-Telegram tests + real edit/new-b-roll regeneration run (Gemini, edge-tts, Pexels, ffmpeg) on a DB copy. **Live Telegram blocked: no `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`** |
 | 8 Publish | ⏭ next | | see plan below |
 | 9 Analytics + runner | ⬜ | | |
 
