@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS videos (
     duration_s      REAL,
     broll_manifest  TEXT,                           -- JSON: clip ids/urls/licenses
     status          TEXT NOT NULL DEFAULT 'pending',-- pending|voiced|rendered|failed
+    notes           TEXT,                           -- JSON: voice, rate, LUFS, warnings, failure reason
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -153,6 +154,7 @@ MIGRATIONS = [
     ("candidates", "topic", "TEXT"),
     ("stories", "sources", "TEXT"),
     ("scripts", "notes", "TEXT"),
+    ("videos", "notes", "TEXT"),
 ]
 
 

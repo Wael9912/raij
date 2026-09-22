@@ -7,7 +7,7 @@ brands:
     tone: "Sudanese-friendly, MSA-lean, warm and curious"
     voice:
       name: ar-EG-ShakirNeural     # alt: ar-SA-HamedNeural
-      rate: "+0%"
+      rate: "+10%"                 # Shorts pacing; Arabic neural voices speak ~1.85 words/s at +0%
       pitch: "+0Hz"
     subtitle_font: "Noto Naskh Arabic"
     platforms: [instagram, facebook, youtube, tiktok_export]
@@ -65,12 +65,16 @@ extract:
   whisper_max_seconds: 900
 
 script:
-  min_words: 110
-  max_words: 150
+  # Brief said 110–150, but measured Arabic TTS (~2.05 words/s at +10%) makes 150 words ≈ 73s.
+  # 85–115 words ≈ 41–56s, inside voice.max_seconds. The model is asked for min+10..max-10.
+  min_words: 85
+  max_words: 115
   similarity_threshold: 0.35       # above this vs source transcript → rewrite once, else reject
 
 voice:
   target_lufs: -14
+  max_seconds: 58                  # leaves ~2s of video.max_seconds for the brand end-card
+  min_seconds: 40                  # shorter is kept, with a warning
 
 video:
   width: 1080

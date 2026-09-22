@@ -17,7 +17,7 @@ def _words(n, word="كلمة"):
     return " ".join([word] * n)
 
 
-def _draft(texts=None, n=120):
+def _draft(texts=None, n=100):
     """A valid 4-beat draft whose total length is n words unless texts are given."""
     texts = texts or ["هل سمعت الخبر", _words(n - 7), "والنتيجة مفاجئة", "اكتب رأيك"]
     roles = ["hook", "body", "payoff", "cta"]
@@ -82,10 +82,10 @@ def test_comparable_only_within_same_script():
 # --- validation --------------------------------------------------------------
 
 def test_validate_accepts_good_draft_and_normalizes_tags():
-    punct = _draft(["هل سمعت الخبر؟", _words(110) + " «ميتا» (Meta) 17 ألف، 01:11 — 50%.", "والنتيجة!", "اكتب رأيك…"])
-    write.validate(punct, 110, 150)
-    d = write.validate(_draft(), 110, 150)
-    assert d.words == 120 and d.hashtags == ["#news", "#أخبار"] and d.body_ar.count("\n") == 3
+    punct = _draft(["هل سمعت الخبر؟", _words(92) + " «ميتا» (Meta) 17 ألف، 01:11 — 50%.", "والنتيجة!", "اكتب رأيك…"])
+    write.validate(punct, 85, 115)
+    d = write.validate(_draft(), 85, 115)
+    assert d.words == 100 and d.hashtags == ["#news", "#أخبار"] and d.body_ar.count("\n") == 3
 
 
 @pytest.mark.parametrize("bad, msg", [
@@ -94,7 +94,7 @@ def test_validate_accepts_good_draft_and_normalizes_tags():
     ({**_draft(), "beats": _draft()["beats"][1:]}, "hook"),
     ({**_draft(), "beats": [{**b, "broll_keywords": ["سوق"]} for b in _draft()["beats"]]}, "English b-roll"),
     ({"beats": "nope"}, "no beats"),
-    (_draft(["هل سمعت الخبر", _words(110) + " إيلاي مانニング", "والنتيجة مفاجئة", "اكتب رأيك"]), "stray"),
+    (_draft(["هل سمعت الخبر", _words(92) + " إيلاي مانニング", "والنتيجة مفاجئة", "اكتب رأيك"]), "stray"),
 ])
 def test_validate_rejects(bad, msg):
     with pytest.raises(write.DraftError, match=msg):
@@ -104,7 +104,7 @@ def test_validate_rejects(bad, msg):
 # --- gate --------------------------------------------------------------------
 
 def _copying_draft():
-    body = " ".join([SOURCE_AR] * 5)                                   # lifts the source wholesale
+    body = " ".join([SOURCE_AR] * 3)                                   # lifts the source wholesale
     return _draft(["هل سمعت الخبر", body, "والنتيجة مفاجئة", "اكتب رأيك"])
 
 
@@ -213,8 +213,8 @@ def test_wrong_number_triggers_retry_naming_it(env, monkeypatch):
     cfg, conn, tmp = env
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     _story(conn)
-    wrong = _draft(["هل سمعت الخبر", _words(110) + " 201 اتحادا", "والنتيجة مفاجئة", "اكتب رأيك"])
-    right = _draft(["هل سمعت الخبر", _words(110) + " 211 اتحادا", "والنتيجة مفاجئة", "اكتب رأيك"])
+    wrong = _draft(["هل سمعت الخبر", _words(92) + " 201 اتحادا", "والنتيجة مفاجئة", "اكتب رأيك"])
+    right = _draft(["هل سمعت الخبر", _words(92) + " 211 اتحادا", "والنتيجة مفاجئة", "اكتب رأيك"])
     prompts = []
     assert runner.script(cfg, conn, client=_llm([wrong, right], prompts), out_dir=tmp) == 0
     assert "not on the story card: 201" in prompts[1]

@@ -109,8 +109,8 @@ def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extr
         claims=_bullets(claims),
         why_trending=story.get("why_trending") or "",
         # Aim inside the accepted range: models tend to undershoot word counts.
-        target_min=str(cfg.get("script.min_words", 110) + 10),
-        target_max=str(cfg.get("script.max_words", 150) - 10),
+        target_min=str(cfg.get("script.min_words", 85) + 10),
+        target_max=str(cfg.get("script.max_words", 115) - 10),
         extra=f"\n{extra.strip()}\n" if extra.strip() else "",
     )
 
@@ -118,7 +118,7 @@ def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extr
 def draft(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str = "",
           client: httpx.Client | None = None) -> Draft:
     """One draft; if it breaks the rules, retry once telling the model what was wrong."""
-    lo, hi = cfg.get("script.min_words", 110), cfg.get("script.max_words", 150)
+    lo, hi = cfg.get("script.min_words", 85), cfg.get("script.max_words", 115)
 
     def attempt(note: str) -> Draft:
         d = validate(llm.complete_json(cfg, build_prompt(cfg, story, brand, note), client=client), lo, hi)

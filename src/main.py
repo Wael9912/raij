@@ -51,11 +51,17 @@ def cmd_script(cfg, conn, args) -> int:
     return script(cfg, conn, dry_run=args.dry_run)
 
 
+def cmd_voice(cfg, conn, args) -> int:
+    from src.voice.runner import voice
+    return voice(cfg, conn, dry_run=args.dry_run)
+
+
 HANDLERS = {name: _not_implemented(name) for name in STAGES}
 HANDLERS["discover"] = cmd_discover
 HANDLERS["rank"] = cmd_rank
 HANDLERS["extract"] = cmd_extract
 HANDLERS["script"] = cmd_script
+HANDLERS["voice"] = cmd_voice
 
 
 def cmd_init_db(cfg, conn, args) -> int:
