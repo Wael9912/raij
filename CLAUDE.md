@@ -14,7 +14,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 3 Extract | ✅ done | `7672048`, `affe555` | live: 5/5 story cards (3 trends via news articles, 2 RSS articles). yt-dlp subs verified live on a real video; whisper fallback mocked only (`uv sync --group whisper` not installed) |
 | 4 Script | ✅ done | `d860e76`, `dde9d8c` | live: 5/5 passed (3.5/3.6-flash); Arabic-source similarity 0.06–0.10; number gate caught 211→201, 953,531→995,000 |
 | 5 Voice | ✅ done | `5aba7c1` | live: 5/5 voiced, 44–53s at +10%, −14.2 LUFS / −1.5 dBTP; Gemini transcription of a clip matched the script word for word |
-| 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9` | live with Pexels: 5/5 rendered, 46–54s, 8–11 clips each, 27–46 MB. Open issue: stock people can pass for the story's real person (see decisions) |
+| 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9`, `cf0b0b3` | live with Pexels: 5/5 rendered, 45–54s, 7–10 clips, 18–37 MB; faceless b-roll + licensed Commons photos of public figures |
 | 7 Telegram review | ⏭ next | | see plan below — needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
 | 8 Publish | ⬜ | | |
 | 9 Analytics + runner | ⬜ | | |
@@ -88,9 +88,13 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   Real videos are 27–46 MB (more cuts → more bitrate); Telegram bots can only send ≤50 MB → preview copy in Phase 7.
 - B-roll selection: one clip per ~7s of a beat (≤4), clips >60s skipped, shortest-that-fits first, clips used in
   the last 7 days sort last; cache pruned to clips used in the last 14 days (~6 MB/clip).
-- **Open:** stock searches return strangers' faces for most office/lifestyle keywords; in person-centred stories
-  (obituary, celebrity) they read as the real person. The prompt now asks for objects/places, which helps but
-  doesn't remove it. Options: faceless style (keyword blocklist of person nouns), or rely on Phase 7 review.
+- **Faceless b-roll + real photos (owner's decision):** stock strangers read as the story's real person. Keywords
+  naming people are dropped (`write._PERSON_WORD`); candidate clips' preview frames go through OpenCV YuNet
+  (`assemble/faces.py`, score 0.45, face ≥1.5% of frame → skip). A beat with `"person"` opens on that public
+  figure's **Wikimedia Commons** lead photo — only PD/CC0/CC BY/CC BY-SA, never Wikipedia fair-use/local files or
+  news-agency photos (copyright). Credit drawn on the frame and kept in `videos.notes.credits` →
+  **Phase 7/8 must append credits to the caption** (CC BY requirement). No free photo → faceless (e.g. Accorsi).
+  Known gap: occluded faces (inside a helmet) can pass the detector — human review.
 
 ## Plan — Phase 7 (Telegram review)
 
@@ -101,7 +105,7 @@ stock key exists, run `assemble` live and look at the 5 real videos (b-roll rele
   MockTransport tests like every other stage. Long polling (`getUpdates`), no webhook/server needed.
 - `review`: for each `rendered` video with no approval → `sendVideo` (≤50 MB; if bigger, re-encode a preview
   copy with `-maxrate 5M` into `assets/generated/video/<id>.preview.mp4`) with caption = hook + description +
-  hashtags + sources, and the full Arabic script as a follow-up message; inline keyboard
+  hashtags + sources + photo credits, and the full Arabic script as a follow-up message; inline keyboard
   [✅ Approve] [❌ Reject] [✏️ Edit script] [🔁 New b-roll] [🎙 Re-voice]. Store `telegram_msg_id`.
 - `bot` (long-running) handles callbacks — **only from `TELEGRAM_CHAT_ID`**, everything else ignored:
   approve/reject → `approvals` row (`decided_by` = Telegram user id); edit → ForceReply for the note →
