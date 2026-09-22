@@ -114,10 +114,9 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
         log.info("[dry run] nothing uploaded or written")
         return 0
 
-    if not videos:                                   # nothing to do: no run row (keeps idle ticks write-free)
-        return 0
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('publish')").lastrowid
-    conn.commit()
+    # The runs row is created at the first real attempt, so a pass with nothing to do writes nothing
+    # (keeps idle GitHub Actions ticks from re-saving the state).
+    run_id = None
     done, failed, skipped, notices = [], [], set(), []
     own_client = client is None
     client = client or make_client()
@@ -133,6 +132,8 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                 post = _post(conn, v, name)
                 if post["status"] in DONE or post["attempts"] >= max_attempts:
                     continue
+                if run_id is None:
+                    run_id = conn.execute("INSERT INTO runs (command) VALUES ('publish')").lastrowid
                 conn.execute("UPDATE posts SET attempts = attempts + 1 WHERE id = ?", (post["id"],))
                 conn.commit()
                 try:
@@ -166,6 +167,9 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
 
     for name in sorted(skipped):
         log.info("%s skipped: %s", name, missing[name])
+    if run_id is None:
+        log.info("Publish: nothing new to post (%d approved video(s) checked)", len(videos))
+        return 0
     _notify(cfg, notices, bot)
     status = "failed" if failed and not done else ("partial" if failed else "ok")
     notes = {"videos": len(videos), "done": done, "failed": failed,
