@@ -17,7 +17,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9`, `cf0b0b3` | live with Pexels: 5/5 rendered, 45–54s, 7–10 clips, 18–37 MB; faceless b-roll + licensed Commons photos of public figures |
 | 7 Telegram review | ✅ done | `d27ce54`, `47b385c` | live with @Raig88_bot: approve/reject/edit/new b-roll all used by the owner; #13 #17 #19 approved, #14 #16 rejected. Late-tap bug found live + fixed |
 | 6.5 Visual polish | ✅ done | `398a58c` | Cairo Black via raqm, xfade transitions, hook title + series badge, logo, progress bar. #13/#17/#19 re-rendered as #20/#21/#22 → **awaiting owner re-approval** |
-| 8 Publish | 🟡 built | `191dbef` | all four publishers built + mock-tested; live: TikTok export of #20 #21 ✅. **YouTube/IG/FB never run live** — no Meta keys, no `client_secret.json` |
+| 8 Publish | 🟡 YouTube + TikTok live | `191dbef` | 2026-09-22: #20 #21 #23 live as public Shorts on channel رائج (UCeLlvJwQe-uj4IEZEsO3YIw), processed OK, not locked to private; TikTok exported. **IG/FB not run live** — Meta keys pending |
 | 9 Analytics + runner | ⬜ | | |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
@@ -131,12 +131,12 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
 
 ## Next up
 
-1. **Owner:** Meta keys (`META_PAGE_ID`, `META_IG_USER_ID`, `META_PAGE_ACCESS_TOKEN`, SETUP §5) and YouTube
-   (`client_secret.json` in repo root + `uv run python -m src.main youtube-auth`, SETUP §6). Then run `publish`
-   live on #20/#21 — they're `approved` with TikTok exported and still owe YT/IG/FB (72h approval window from
-   2026-09-22 14:37 UTC; after that raise `publish.max_age_hours` or re-approve). First live run: check the
-   Graph API version (`publish.meta_graph_version: v25.0`) isn't rejected, and whether YouTube locks uploads to
-   private (unverified project). #23 (new b-roll of #19/#22) is in review.
+1. **Owner: Meta keys** (SETUP §5). Owner pastes App ID + App Secret + short-lived Graph Explorer user token;
+   we exchange it (`/oauth/access_token?grant_type=fb_exchange_token`) → `/me/accounts` Page token + id →
+   `/{page}?fields=instagram_business_account` → save `META_PAGE_ID`, `META_IG_USER_ID`, `META_PAGE_ACCESS_TOKEN`.
+   Then `publish` posts #20 #21 #23 to IG/FB (still `approved`, owing only IG/FB) if within 72h of approval
+   (≈2026-09-25 14:37 UTC; else raise `publish.max_age_hours`). Check `publish.meta_graph_version: v25.0` is accepted.
+   YouTube is done: OAuth consent screen published (In production), token in `data/youtube.token.json`.
 2. Phase 9: analytics + `run-daily` runner (bot as a service, cron).
 
 ## Phase 8 (Publish) — as built
