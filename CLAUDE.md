@@ -14,12 +14,12 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 3 Extract | ✅ done | `7672048`, `affe555` | live: 5/5 story cards (3 trends via news articles, 2 RSS articles). yt-dlp subs verified live on a real video; whisper fallback mocked only (`uv sync --group whisper` not installed) |
 | 4 Script | ✅ done | `d860e76`, `dde9d8c` | live: 5/5 passed (3.5/3.6-flash); Arabic-source similarity 0.06–0.10; number gate caught 211→201, 953,531→995,000 |
 | 5 Voice | ✅ done | `5aba7c1` | live: 5/5 voiced, 44–53s at +10%, −14.2 LUFS / −1.5 dBTP; Gemini transcription of a clip matched the script word for word |
-| 6 Assemble | 🟡 built | `7223ffd` | real render verified (live voice + generated test clips, subs in sync). **Live b-roll blocked: no Pexels/Pixabay key** — run `assemble` once a key is in `.env` |
+| 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9` | live with Pexels: 5/5 rendered, 46–54s, 8–11 clips each, 27–46 MB. Open issue: stock people can pass for the story's real person (see decisions) |
 | 7 Telegram review | ⏭ next | | see plan below — needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
 | 8 Publish | ⬜ | | |
 | 9 Analytics + runner | ⬜ | | |
 
-Keys in `.env`: `GEMINI_API_KEY` only. Missing: YouTube, Reddit, Groq, Pexels, Pixabay, Telegram, Meta, YouTube OAuth.
+Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`. Missing: YouTube, Reddit, Groq, Pixabay, Telegram, Meta, YouTube OAuth.
 Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** — subtitles are drawn in Python instead.
 
 ## Commands
@@ -85,7 +85,12 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   Subtitle band top y=1250 (clear of platform UI). B-roll: Pexels→Pixabay, portrait first, ≤2 clips/beat,
   `-stream_loop` so short clips loop. Guardrail = `render.guard()` against `config.ALLOWED_MEDIA_SUBDIRS`
   (stock, generated, music), symlinks resolved. Output `assets/generated/video/<video_id>.mp4` + `.srt`.
-  Test-pattern footage made a 60 MB file; real footage is smaller, but Telegram bots can only send ≤50 MB.
+  Real videos are 27–46 MB (more cuts → more bitrate); Telegram bots can only send ≤50 MB → preview copy in Phase 7.
+- B-roll selection: one clip per ~7s of a beat (≤4), clips >60s skipped, shortest-that-fits first, clips used in
+  the last 7 days sort last; cache pruned to clips used in the last 14 days (~6 MB/clip).
+- **Open:** stock searches return strangers' faces for most office/lifestyle keywords; in person-centred stories
+  (obituary, celebrity) they read as the real person. The prompt now asks for objects/places, which helps but
+  doesn't remove it. Options: faceless style (keyword blocklist of person nouns), or rely on Phase 7 review.
 
 ## Plan — Phase 7 (Telegram review)
 
