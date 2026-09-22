@@ -39,12 +39,37 @@ def _music(cfg: Config, video_id: int) -> Path | None:
     return tracks[video_id % len(tracks)].relative_to(cfg.root) if tracks else None
 
 
+def _recent_clips(conn: sqlite3.Connection, days: int = 7) -> set[str]:
+    """provider:id of clips in videos rendered recently, so consecutive videos don't look alike."""
+    rows = conn.execute(
+        "SELECT broll_manifest FROM videos WHERE broll_manifest IS NOT NULL AND created_at >= datetime('now', ?)",
+        (f"-{int(days)} days",),
+    ).fetchall()
+    return {f"{m['provider']}:{m['id']}" for r in rows for m in json.loads(r[0])}
+
+
+def prune_stock(cfg: Config, conn: sqlite3.Connection, keep_days: int) -> int:
+    """Delete cached stock files no video from the last keep_days (or still pending) refers to."""
+    rows = conn.execute(
+        "SELECT broll_manifest FROM videos WHERE broll_manifest IS NOT NULL "
+        "AND (created_at >= datetime('now', ?) OR status NOT IN ('rendered', 'failed'))",
+        (f"-{int(keep_days)} days",),
+    ).fetchall()
+    keep = {Path(m["path"]).name for r in rows for m in json.loads(r[0])}
+    removed = 0
+    for f in (cfg.root / "assets" / "stock").glob("*.mp4"):
+        if f.name not in keep:
+            f.unlink()
+            removed += 1
+    return removed
+
+
 def _brand(cfg: Config, brand_id: str) -> dict[str, Any]:
     return next((b for b in cfg.brands if b["id"] == brand_id), {"id": brand_id})
 
 
 def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
-                   run: render.RunCmd = render.run_cmd) -> dict[str, Any]:
+                   run: render.RunCmd = render.run_cmd, recent: set[str] | None = None) -> dict[str, Any]:
     beats_text = json.loads(video["beats"])
     timing = json.loads((cfg.root / video["voice_path"]).with_suffix(".words.json").read_text(encoding="utf-8"))
     spans, voice_s = timing["beats"], timing["duration"]
@@ -55,7 +80,7 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     for i, (beat, span) in enumerate(zip(beats_text, spans)):
         start = 0.0 if i == 0 else span["start"]
         end = spans[i + 1]["start"] if i + 1 < len(spans) else voice_s
-        chosen = broll.choose(cfg, client, beat["broll_keywords"], need=end - start, used=used)
+        chosen = broll.choose(cfg, client, beat["broll_keywords"], need=end - start, used=used, recent=recent)
         paths = []
         for clip in chosen:
             broll.download(cfg, client, clip)
@@ -110,7 +135,7 @@ def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, clien
     try:
         for v in pending:
             try:
-                row = assemble_video(cfg, v, client, run=run)
+                row = assemble_video(cfg, v, client, run=run, recent=_recent_clips(conn))
             except (broll.BrollError, render.GuardrailError) as exc:
                 log.warning("Video %d: %s", v["id"], exc)
                 notes = {**json.loads(v.get("notes") or "{}"), "reason": str(exc)}
@@ -138,6 +163,10 @@ def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, clien
         if own_client:
             client.close()
 
+    if rendered:
+        removed = prune_stock(cfg, conn, cfg.get("video.stock_keep_days", 14))
+        if removed:
+            log.info("Pruned %d cached stock clip(s) no recent video uses", removed)
     total = len(rendered) + len(failed) + len(retry)
     status = "ok" if len(rendered) == total else ("partial" if rendered else "failed")
     notes = {"pending": total, "rendered": len(rendered), "failed": failed, "retry": retry}

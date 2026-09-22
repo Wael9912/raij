@@ -35,7 +35,8 @@ Language rules:
 
 For every beat add "broll_keywords": 2–4 concrete, visual ENGLISH search terms for stock footage
 (e.g. "auction hammer", "football stadium crowd"). Generic scenes only — never a real person's name,
-logo, or brand, since stock libraries won't have them.
+logo, or brand, since stock libraries won't have them. When the story is about a specific person,
+prefer objects, places and crowds over close-up faces, so no stranger can be mistaken for them.
 
 Also write "description_en": 1–2 English sentences for the post caption, and "hashtags": 5–8 tags
 mixing Arabic and English, each starting with #.

@@ -252,3 +252,32 @@ def test_real_render_snapshot(env):
     assert (video["width"], video["height"]) == (1080, 1920)
     assert any(s["codec_type"] == "audio" for s in probe["streams"])
     assert abs(float(probe["format"]["duration"]) - 3.6) < 0.15
+
+
+# --- clip selection & cache --------------------------------------------------
+
+def test_clips_needed_scales_with_beat_length():
+    assert [broll.clips_needed(s) for s in (3, 7, 7.1, 20, 60)] == [1, 1, 2, 3, 4]
+
+
+def test_choose_prefers_fresh_short_clips_and_skips_long_ones(env, monkeypatch):
+    cfg, _, _ = env
+    monkeypatch.setenv("PEXELS_API_KEY", "k")
+    vids = [_pexels_video(1, dur=117), _pexels_video(2, dur=40), _pexels_video(3, dur=9), _pexels_video(4, dur=12)]
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"videos": vids})))
+    picked = broll.choose(cfg, client, ["x"], need=14, used=set(), recent={"pexels:3"})
+    assert [c.id for c in picked] == ["4", "2"]          # 2 cuts; 117s skipped; recently used #3 last
+
+
+def test_prune_stock_keeps_only_recent_clips(env):
+    cfg, conn, tmp = env
+    _voiced(cfg, conn)
+    stock = tmp / "assets/stock"
+    stock.mkdir(parents=True)
+    for name in ("pexels_1.mp4", "pexels_2.mp4"):
+        (stock / name).write_bytes(b"x")
+    conn.execute("UPDATE videos SET broll_manifest = ?, status = 'rendered'",
+                 (json.dumps([{"provider": "pexels", "id": "1", "path": "assets/stock/pexels_1.mp4"}]),))
+    conn.commit()
+    assert runner.prune_stock(cfg, conn, keep_days=14) == 1
+    assert [p.name for p in stock.glob("*.mp4")] == ["pexels_1.mp4"]

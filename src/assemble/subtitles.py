@@ -34,10 +34,10 @@ _QUOTES = str.maketrans({"«": '"', "»": '"', "“": '"', "”": '"'})
 @dataclass
 class Style:
     width: int = 1080
-    band_height: int = 340             # PNG band; placed at `top` on the 1080×1920 frame
+    band_height: int = 380             # PNG band; placed at `top` on the 1080×1920 frame
     top: int = 1250                    # clear of Reels/Shorts bottom UI (~last 300 px)
-    max_line_px: int = 900
-    size: int = 72
+    max_line_px: int = 940
+    size: int = 84
     line_gap: int = 18
     stroke: int = 6
     fill: tuple = (255, 255, 255, 255)

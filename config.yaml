@@ -82,6 +82,7 @@ video:
   max_seconds: 60
   fps: 30
   endcard_seconds: 2.0
+  stock_keep_days: 14              # cached stock clips unused this long are deleted after a render
 
 llm:
   fallback_order: [gemini, groq, ollama]

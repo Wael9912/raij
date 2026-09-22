@@ -8,6 +8,7 @@ provider+id and never fetched twice.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -94,9 +95,22 @@ def providers(cfg: Config) -> list[tuple[str, str]]:
 SEARCH = {"pexels": search_pexels, "pixabay": search_pixabay}
 
 
+MAX_CLIP_SECONDS = 60        # longer stock clips are big downloads for the few seconds we use
+CUT_EVERY = 7.0              # aim for a new shot about this often
+MAX_CLIPS_PER_BEAT = 4
+
+
+def clips_needed(seconds: float) -> int:
+    return min(MAX_CLIPS_PER_BEAT, max(1, math.ceil(seconds / CUT_EVERY)))
+
+
 def choose(cfg: Config, client: httpx.Client, keywords: list[str], need: float, used: set[str],
-           max_clips: int = 2) -> list[Clip]:
-    """Up to max_clips unused clips for one beat, portrait first, covering `need` seconds if possible."""
+           recent: set[str] | None = None) -> list[Clip]:
+    """Clips for one beat — one per ~7s of it — never reused within the video, and preferring
+    portrait, not used in recent videos, and short (small downloads) but long enough to fill a cut."""
+    recent = recent or set()
+    max_clips = clips_needed(need)
+    per_clip = need / max_clips
     keys = providers(cfg)
     if not keys:
         raise BrollError("no stock footage key: set PEXELS_API_KEY or PIXABAY_API_KEY in .env")
@@ -107,14 +121,19 @@ def choose(cfg: Config, client: httpx.Client, keywords: list[str], need: float, 
                 found += SEARCH[name](client, key, kw)
             except (FetchError, ValueError) as exc:
                 log.warning("%s search %r failed: %s", name, kw, exc)
-        if any(c.portrait and f"{c.provider}:{c.id}" not in used for c in found):
+        good = [c for c in found if c.portrait and f"{c.provider}:{c.id}" not in used | recent]
+        if len(good) >= max_clips:
             break                                     # good enough; spare the quota
-    fresh = [c for c in found if f"{c.provider}:{c.id}" not in used and c.duration >= 2]
-    fresh.sort(key=lambda c: (not c.portrait, -c.duration))
+    seen: set[str] = set()
+    fresh = []
+    for c in found:
+        key = f"{c.provider}:{c.id}"
+        if key not in used and key not in seen and 2 <= c.duration <= MAX_CLIP_SECONDS:
+            seen.add(key)
+            fresh.append(c)
+    fresh.sort(key=lambda c: (not c.portrait, f"{c.provider}:{c.id}" in recent, c.duration < per_clip, c.duration))
     picked: list[Clip] = []
-    for c in fresh:
-        if len(picked) >= max_clips or sum(p.duration for p in picked) >= need:
-            break
+    for c in fresh[:max_clips]:
         picked.append(c)
         used.add(f"{c.provider}:{c.id}")
     if not picked:
