@@ -83,6 +83,7 @@ video:
   fps: 30
   endcard_seconds: 2.0
   stock_keep_days: 14              # cached stock clips unused this long are deleted after a render
+  faceless: true                   # skip stock clips whose previews show a face (public figures get a licensed photo)
 
 llm:
   fallback_order: [gemini, groq, ollama]

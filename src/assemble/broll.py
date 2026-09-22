@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,7 @@ class Clip:
     duration: float
     license: str
     path: str = ""        # repo-relative, once downloaded
+    previews: list[str] = field(default_factory=list)   # small still frames, for the face check
 
     @property
     def portrait(self) -> bool:
@@ -64,9 +65,12 @@ def search_pexels(client: httpx.Client, key: str, query: str) -> list[Clip]:
     for v in resp.json().get("videos", []):
         f = _pick_file(v.get("video_files") or [])
         if f:
+            pics = [p["picture"] for p in v.get("video_pictures") or [] if p.get("picture")]
+            previews = [pics[i] for i in sorted({len(pics) // 4, len(pics) // 2, 3 * len(pics) // 4})] if pics else \
+                [v["image"]] if v.get("image") else []
             clips.append(Clip("pexels", str(v["id"]), f["link"], v.get("url", ""),
                               (v.get("user") or {}).get("name", ""), f["width"], f["height"],
-                              float(v.get("duration") or 0), "Pexels License"))
+                              float(v.get("duration") or 0), "Pexels License", previews=previews))
     return clips
 
 
@@ -78,8 +82,10 @@ def search_pixabay(client: httpx.Client, key: str, query: str) -> list[Clip]:
                  for f in (h.get("videos") or {}).values()]
         f = _pick_file(files)
         if f:
+            thumbs = [v.get("thumbnail") for v in (h.get("videos") or {}).values() if v.get("thumbnail")]
             clips.append(Clip("pixabay", str(h["id"]), f["link"], h.get("pageURL", ""), h.get("user", ""),
-                              f["width"], f["height"], float(h.get("duration") or 0), "Pixabay Content License"))
+                              f["width"], f["height"], float(h.get("duration") or 0), "Pixabay Content License",
+                              previews=thumbs[:1]))
     return clips
 
 
@@ -104,40 +110,56 @@ def clips_needed(seconds: float) -> int:
     return min(MAX_CLIPS_PER_BEAT, max(1, math.ceil(seconds / CUT_EVERY)))
 
 
+def _faceless(client: httpx.Client, clip: Clip) -> bool:
+    from src.assemble import faces
+    return not faces.has_face(client, clip.previews)
+
+
 def choose(cfg: Config, client: httpx.Client, keywords: list[str], need: float, used: set[str],
-           recent: set[str] | None = None) -> list[Clip]:
+           recent: set[str] | None = None, faceless=_faceless) -> list[Clip]:
     """Clips for one beat — one per ~7s of it — never reused within the video, and preferring
-    portrait, not used in recent videos, and short (small downloads) but long enough to fill a cut."""
+    portrait, not used in recent videos, and short (small downloads) but long enough to fill a cut.
+    With video.faceless, clips whose previews show a face are skipped; the next keyword is searched
+    when a keyword doesn't yield enough faceless clips."""
     recent = recent or set()
     max_clips = clips_needed(need)
     per_clip = need / max_clips
     keys = providers(cfg)
     if not keys:
         raise BrollError("no stock footage key: set PEXELS_API_KEY or PIXABAY_API_KEY in .env")
-    found: list[Clip] = []
+    check = faceless if cfg.get("video.faceless", True) else (lambda _client, _clip: True)
+    picked: list[Clip] = []
+    checked: set[str] = set()
+    rejected = 0
     for kw in keywords:
+        found: list[Clip] = []
         for name, key in keys:
             try:
                 found += SEARCH[name](client, key, kw)
             except (FetchError, ValueError) as exc:
                 log.warning("%s search %r failed: %s", name, kw, exc)
-        good = [c for c in found if c.portrait and f"{c.provider}:{c.id}" not in used | recent]
-        if len(good) >= max_clips:
-            break                                     # good enough; spare the quota
-    seen: set[str] = set()
-    fresh = []
-    for c in found:
-        key = f"{c.provider}:{c.id}"
-        if key not in used and key not in seen and 2 <= c.duration <= MAX_CLIP_SECONDS:
-            seen.add(key)
-            fresh.append(c)
-    fresh.sort(key=lambda c: (not c.portrait, f"{c.provider}:{c.id}" in recent, c.duration < per_clip, c.duration))
-    picked: list[Clip] = []
-    for c in fresh[:max_clips]:
-        picked.append(c)
-        used.add(f"{c.provider}:{c.id}")
+        fresh = [c for c in found if f"{c.provider}:{c.id}" not in used | checked
+                 and 2 <= c.duration <= MAX_CLIP_SECONDS]
+        fresh.sort(key=lambda c: (not c.portrait, f"{c.provider}:{c.id}" in recent, c.duration < per_clip,
+                                  c.duration))
+        for c in fresh:
+            if len(picked) >= max_clips:
+                break
+            key = f"{c.provider}:{c.id}"
+            if key in checked:
+                continue
+            checked.add(key)
+            if not check(client, c):
+                rejected += 1
+                continue
+            picked.append(c)
+            used.add(key)
+        if len(picked) >= max_clips:
+            break
+    if rejected:
+        log.info("Skipped %d clip(s) showing faces for %s", rejected, keywords)
     if not picked:
-        raise BrollError(f"no usable clips for {keywords}")
+        raise BrollError(f"no usable faceless clips for {keywords}")
     return picked
 
 

@@ -281,3 +281,119 @@ def test_prune_stock_keeps_only_recent_clips(env):
     conn.commit()
     assert runner.prune_stock(cfg, conn, keep_days=14) == 1
     assert [p.name for p in stock.glob("*.mp4")] == ["pexels_1.mp4"]
+
+
+# --- public-figure photos ----------------------------------------------------
+
+from src.assemble import portrait  # noqa: E402
+
+
+def _wiki(licence="CC BY-SA 4.0", repo="shared", nonfree=None, disambig=False, image="Face.jpg"):
+    def handler(request):
+        if request.url.host == "upload.wikimedia.org":
+            from io import BytesIO
+            from PIL import Image
+            buf = BytesIO()
+            Image.new("RGB", (400, 600), (120, 90, 60)).save(buf, "JPEG")
+            return httpx.Response(200, content=buf.getvalue())
+        titles = request.url.params["titles"]
+        if titles.startswith("File:"):
+            meta = {"LicenseShortName": {"value": licence}, "Artist": {"value": "<a href='x'>Jane Doe</a>"}}
+            if nonfree:
+                meta["NonFree"] = {"value": "true"}
+            return httpx.Response(200, json={"query": {"pages": {"-1": {
+                "imagerepository": repo, "imageinfo": [{"thumburl": "https://upload.wikimedia.org/f.jpg",
+                                                        "descriptionurl": "https://commons.wikimedia.org/f",
+                                                        "extmetadata": meta}]}}}})
+        page = {"title": titles, "pageprops": {"disambiguation": ""} if disambig else {}}
+        if image:
+            page["pageimage"] = image
+        return httpx.Response(200, json={"query": {"pages": {"1": page}}})
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_photo_lookup_accepts_free_commons_licence():
+    p = portrait.lookup(_wiki(), "Gianni Infantino")
+    assert (p.license, p.author, p.credit) == ("CC BY-SA 4.0", "Jane Doe",
+                                               "Photo: Jane Doe / CC BY-SA 4.0 via Wikimedia Commons")
+
+
+@pytest.mark.parametrize("kwargs", [dict(repo="local"), dict(licence="Fair use"), dict(nonfree=True),
+                                    dict(disambig=True), dict(image=None), dict(licence="All rights reserved")])
+def test_photo_lookup_refuses_non_free(kwargs):
+    assert portrait.lookup(_wiki(**kwargs), "Someone") is None
+
+
+def test_compose_makes_portrait_frame(tmp_path):
+    from PIL import Image
+    src = tmp_path / "in.jpg"
+    Image.new("RGB", (1600, 900), (10, 200, 10)).save(src)
+    out = portrait.compose(src, "Photo: Jane Doe / CC BY 2.0 via Wikimedia Commons", tmp_path / "f.jpg")
+    assert Image.open(out).size == (1080, 1920)
+
+
+def test_still_segments_get_zoom_filter(env):
+    cfg, _, tmp = env
+    segs = render.segments_for(SPANS, [[Path("assets/stock/wikimedia_x.jpg")], [Path("assets/stock/a.mp4")]], 2.6)
+    assert [s.still for s in segs] == [True, False]
+    plan = render.Plan(segs, Path("assets/generated/voice/1.wav"), tmp / "assets/generated/video/1/subs.txt",
+                       1250, Path("assets/generated/video/1/e.png"), 2.0, tmp / "o.mp4")
+    cmd = " ".join(render.command(cfg, plan))
+    assert "zoompan" in cmd and "-loop 1 -framerate 30" in cmd
+
+
+def test_person_beat_opens_on_licensed_photo(env, monkeypatch):
+    cfg, conn, tmp = env
+    monkeypatch.setenv("PEXELS_API_KEY", "k")
+    _voiced(cfg, conn)
+    beats = [dict(BEATS[0], person="Gianni Infantino"), BEATS[1]]
+    conn.execute("UPDATE scripts SET beats = ?", (json.dumps(beats, ensure_ascii=False),))
+    conn.commit()
+    wiki, stock = _wiki(), _stock_client([])
+
+    def handler(request):
+        host = request.url.host
+        return (wiki if "wiki" in host else stock)._transport.handle_request(request)
+
+    ff = FakeFFmpeg()
+    assert runner.assemble(cfg, conn, client=httpx.Client(transport=httpx.MockTransport(handler)), run=ff) == 0
+    row = conn.execute("SELECT broll_manifest, notes FROM videos").fetchone()
+    manifest = json.loads(row["broll_manifest"])
+    assert manifest[0]["provider"] == "wikimedia" and manifest[0]["beat"] == 0
+    assert json.loads(row["notes"])["credits"] == ["Photo: Jane Doe / CC BY-SA 4.0 via Wikimedia Commons"]
+    assert "photo_0.jpg" in " ".join(ff.cmds[0])
+
+
+# --- faceless check ----------------------------------------------------------
+
+def test_choose_skips_clips_with_faces_and_tries_next_keyword(env, monkeypatch):
+    cfg, _, _ = env
+    monkeypatch.setenv("PEXELS_API_KEY", "k")
+    queries = []
+
+    def handler(request):
+        q = request.url.params["query"]
+        queries.append(q)
+        ids = [1, 2] if q == "office" else [3]
+        return httpx.Response(200, json={"videos": [_pexels_video(i) for i in ids]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    faceless = lambda _c, clip: clip.id == "3"                      # noqa: E731  clips 1, 2 show faces
+    picked = broll.choose(cfg, client, ["office", "desk lamp"], need=5, used=set(), faceless=faceless)
+    assert [c.id for c in picked] == ["3"] and queries == ["office", "desk lamp"]
+    with pytest.raises(broll.BrollError, match="faceless"):
+        broll.choose(cfg, client, ["office"], need=5, used=set(), faceless=lambda _c, _clip: False)
+
+
+def test_pexels_previews_sampled_from_video_pictures():
+    v = {**_pexels_video(9), "video_pictures": [{"picture": f"https://img/{i}.jpg"} for i in range(8)]}
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"videos": [v]})))
+    assert broll.search_pexels(client, "k", "x")[0].previews == ["https://img/2.jpg", "https://img/4.jpg",
+                                                                "https://img/6.jpg"]
+
+
+def test_face_detector_sees_no_face_in_plain_scene():
+    import numpy as np
+    from src.assemble import faces
+    scene = np.full((720, 405, 3), (40, 120, 200), np.uint8)
+    assert faces.face_ratio(scene) == 0.0

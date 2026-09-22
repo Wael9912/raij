@@ -20,6 +20,13 @@ log = logging.getLogger("raij.script")
 
 ROLES_ORDER = ("hook", "body", "payoff", "cta")
 _ASCII_TERM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 '&-]*$")
+# Faceless b-roll: stock "people" shots read as the story's real person. Keywords naming people are
+# dropped (hands, crowds and silhouettes stay allowed); real public figures get a licensed photo instead.
+_PERSON_WORD = re.compile(
+    r"\b(man|men|woman|women|person|people|guy|girl|boy|lady|ladies|gentleman|businessman|businesswoman|"
+    r"executive|manager|coach|player|athlete|actor|actress|celebrity|star|official|president|leader|judge|"
+    r"doctor|nurse|patient|fan|fans|friend|friends|family|couple|child|children|kid|kids|elderly|senior|"
+    r"portrait|face|faces|selfie|smiling|user|worker|student|teacher|customer|audience)\b", re.I)
 # Weaker models sometimes emit stray CJK/Hangul/kana inside Arabic words (e.g. "مانニング").
 _STRAY = re.compile(r"[^\s\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFFA-Za-z0-9"
                     r".,:;!?%'\"()\[\]«»\-–—/…“”‘’#&+]")
@@ -69,14 +76,19 @@ def validate(data: Any, min_words: int, max_words: int) -> Draft:
         if role not in ROLES_ORDER:
             raise DraftError(f"unknown beat role {role!r}")
         kws = [str(k).strip() for k in b.get("broll_keywords") or [] if str(k).strip()]
-        kws = [k for k in kws if _ASCII_TERM.match(k)][:4]
+        kws = [k for k in kws if _ASCII_TERM.match(k) and not _PERSON_WORD.search(k)][:4]
         if not kws:
-            raise DraftError(f"{role} beat has no English b-roll keywords")
+            raise DraftError(f"{role} beat has no usable b-roll keywords — give English scene keywords with "
+                             f"no people in them (objects, places, hands, crowds, nature)")
         text = str(b["text"]).strip()
         stray = sorted(set(_STRAY.findall(text)))
         if stray:
             raise DraftError(f"{role} beat contains stray non-Arabic characters {''.join(stray)!r}")
-        beats.append({"role": role, "text": text, "broll_keywords": kws})
+        beat = {"role": role, "text": text, "broll_keywords": kws}
+        person = str(b.get("person") or "").strip()
+        if person and _ASCII_TERM.match(person):
+            beat["person"] = person
+        beats.append(beat)
     roles = [b["role"] for b in beats]
     if roles[:1] != ["hook"] or roles[-1:] != ["cta"] or "body" not in roles or "payoff" not in roles:
         raise DraftError(f"beats must run hook → body… → payoff → cta, got {roles}")

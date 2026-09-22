@@ -92,7 +92,7 @@ def test_validate_accepts_good_draft_and_normalizes_tags():
     (_draft(n=60), "60 words — too short; add about 60"),
     (_draft(n=170), "cut about 30"),
     ({**_draft(), "beats": _draft()["beats"][1:]}, "hook"),
-    ({**_draft(), "beats": [{**b, "broll_keywords": ["سوق"]} for b in _draft()["beats"]]}, "English b-roll"),
+    ({**_draft(), "beats": [{**b, "broll_keywords": ["سوق"]} for b in _draft()["beats"]]}, "usable b-roll"),
     ({"beats": "nope"}, "no beats"),
     (_draft(["هل سمعت الخبر", _words(92) + " إيلاي مانニング", "والنتيجة مفاجئة", "اكتب رأيك"]), "stray"),
 ])
@@ -219,3 +219,14 @@ def test_wrong_number_triggers_retry_naming_it(env, monkeypatch):
     assert runner.script(cfg, conn, client=_llm([wrong, right], prompts), out_dir=tmp) == 0
     assert "not on the story card: 201" in prompts[1]
     assert "211" in conn.execute("SELECT body_ar FROM scripts").fetchone()[0]
+
+
+def test_faceless_keywords_and_person_field():
+    beats = _draft()["beats"]
+    beats[1] = {**beats[1], "broll_keywords": ["elderly man smiling", "stadium at night", "football coach"],
+                "person": "Ernie Accorsi"}
+    d = write.validate({**_draft(), "beats": beats}, 85, 115)
+    assert d.beats[1]["broll_keywords"] == ["stadium at night"] and d.beats[1]["person"] == "Ernie Accorsi"
+    beats[1] = {**beats[1], "broll_keywords": ["smiling woman portrait"]}
+    with pytest.raises(write.DraftError, match="no people"):
+        write.validate({**_draft(), "beats": beats}, 85, 115)

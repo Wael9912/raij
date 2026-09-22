@@ -19,6 +19,7 @@ from src.config import ALLOWED_MEDIA_SUBDIRS, Config
 
 RunCmd = Callable[[list[str]], subprocess.CompletedProcess]
 W, H, FPS = 1080, 1920, 30
+STILL_EXT = {".jpg", ".jpeg", ".png"}
 
 
 class GuardrailError(RuntimeError):
@@ -45,6 +46,7 @@ def guard(cfg: Config, path: Path) -> Path:
 class Segment:
     clip: Path
     seconds: float
+    still: bool = False                   # a composed photo frame (slow zoom) instead of video
 
 
 @dataclass
@@ -80,14 +82,14 @@ def endcard(brand: dict, out: Path, renderer: Renderer | None = None) -> Path:
 
 def segments_for(beats: list[dict], clips_per_beat: list[list[Path]], voice_seconds: float) -> list[Segment]:
     """Each beat's footage runs from its start to the next beat's start (first from 0, last to the
-    end of the voice), split evenly across that beat's clips."""
+    end of the voice), split evenly across that beat's clips. Image files become stills."""
     segs = []
     for i, (beat, clips) in enumerate(zip(beats, clips_per_beat)):
         start = 0.0 if i == 0 else beat["start"]
         end = beats[i + 1]["start"] if i + 1 < len(beats) else voice_seconds
         span = max(end - start, 0.5)
         for c in clips:
-            segs.append(Segment(c, round(span / len(clips), 3)))
+            segs.append(Segment(c, round(span / len(clips), 3), still=Path(c).suffix.lower() in STILL_EXT))
     return segs
 
 
@@ -98,9 +100,16 @@ def command(cfg: Config, plan: Plan) -> list[str]:
     labels: list[str] = []
     n = 0
     for seg in plan.segments:
-        inputs += ["-stream_loop", "-1", "-i", str(guard(cfg, seg.clip))]
-        filters.append(f"[{n}:v]trim=duration={seg.seconds},setpts=PTS-STARTPTS,fps={FPS},"
-                       f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,format=yuv420p[v{n}]")
+        if seg.still:
+            inputs += ["-loop", "1", "-framerate", str(FPS), "-t", str(seg.seconds), "-i", str(guard(cfg, seg.clip))]
+            filters.append(f"[{n}:v]scale={W}:{H},zoompan=z='min(1+0.0008*on,1.06)':x='iw/2-(iw/zoom/2)':"
+                           f"y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps={FPS},trim=duration={seg.seconds},"
+                           f"setpts=PTS-STARTPTS,setsar=1,format=yuv420p[v{n}]")
+        else:
+            inputs += ["-stream_loop", "-1", "-i", str(guard(cfg, seg.clip))]
+            filters.append(f"[{n}:v]trim=duration={seg.seconds},setpts=PTS-STARTPTS,fps={FPS},"
+                           f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,"
+                           f"format=yuv420p[v{n}]")
         labels.append(f"[v{n}]")
         n += 1
     inputs += ["-loop", "1", "-t", str(plan.endcard_seconds), "-i", str(guard(cfg, plan.endcard))]

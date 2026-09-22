@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from src.assemble import broll, render, subtitles
+from src.assemble import broll, portrait, render, subtitles
 from src.config import Config
 from src.discover.common import make_client
 
@@ -57,8 +57,8 @@ def prune_stock(cfg: Config, conn: sqlite3.Connection, keep_days: int) -> int:
     ).fetchall()
     keep = {Path(m["path"]).name for r in rows for m in json.loads(r[0])}
     removed = 0
-    for f in (cfg.root / "assets" / "stock").glob("*.mp4"):
-        if f.name not in keep:
+    for f in (cfg.root / "assets" / "stock").glob("*"):
+        if f.suffix in (".mp4", ".jpg") and f.name not in keep:
             f.unlink()
             removed += 1
     return removed
@@ -75,26 +75,47 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     spans, voice_s = timing["beats"], timing["duration"]
     endcard_s = cfg.get("video.endcard_seconds", 2.0)
 
-    used: set[str] = set()
-    manifest, clips_per_beat = [], []
-    for i, (beat, span) in enumerate(zip(beats_text, spans)):
-        start = 0.0 if i == 0 else span["start"]
-        end = spans[i + 1]["start"] if i + 1 < len(spans) else voice_s
-        chosen = broll.choose(cfg, client, beat["broll_keywords"], need=end - start, used=used, recent=recent)
-        paths = []
-        for clip in chosen:
-            broll.download(cfg, client, clip)
-            paths.append(Path(clip.path))
-            manifest.append(broll.manifest_entry(clip, i, start, (end - start) / len(chosen)))
-        clips_per_beat.append(paths)
-
     out_dir = cfg.root / "assets" / "generated" / "video"
     work = out_dir / str(video["id"])
     if work.exists():
         shutil.rmtree(work)
+    work.mkdir(parents=True)
+    renderer = subtitles.Renderer()
+
+    used: set[str] = set()
+    photos: dict[str, portrait.Photo | None] = {}
+    manifest, clips_per_beat, credits = [], [], []
+    for i, (beat, span) in enumerate(zip(beats_text, spans)):
+        start = 0.0 if i == 0 else span["start"]
+        end = spans[i + 1]["start"] if i + 1 < len(spans) else voice_s
+        n = broll.clips_needed(end - start)
+        paths: list[Path] = []
+        # A beat about a public figure opens on their licensed photo; the rest is faceless stock.
+        person = beat.get("person")
+        if person and person not in photos:
+            photos[person] = portrait.find(cfg, client, person)
+        photo = photos.get(person) if person else None
+        if photo:
+            frame = portrait.compose(cfg.root / photo.path, photo.credit, work / f"photo_{i}.jpg", renderer)
+            paths.append(frame.relative_to(cfg.root))
+            manifest.append({"provider": "wikimedia", "id": photo.file, "page": photo.page, "author": photo.author,
+                             "license": photo.license, "credit": photo.credit, "person": person,
+                             "path": photo.path, "beat": i, "at": round(start, 3)})
+            if photo.credit not in credits:
+                credits.append(photo.credit)
+        stock: list[broll.Clip] = []
+        if not photo or n > 1:
+            need = (end - start) * (n - 1) / n if photo else end - start
+            stock = broll.choose(cfg, client, beat["broll_keywords"], need=need, used=used, recent=recent)
+            for clip in stock:
+                broll.download(cfg, client, clip)
+                paths.append(Path(clip.path))
+        for clip in stock:
+            manifest.append(broll.manifest_entry(clip, i, start, (end - start) / len(paths)))
+        clips_per_beat.append(paths)
+
     segments = render.segments_for(spans, clips_per_beat, voice_s)
     total = sum(s.seconds for s in segments) + endcard_s
-    renderer = subtitles.Renderer()
     subs_list = subtitles.render_sequence(timing["words"], spans, work, total, renderer)
     card = render.endcard(_brand(cfg, video["brand_id"]), work / "endcard.png", renderer)
     music = _music(cfg, video["id"])
@@ -107,7 +128,8 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     shutil.rmtree(work, ignore_errors=True)
     return {"video_path": str(plan.out.relative_to(cfg.root)), "subtitle_path": str(srt_path.relative_to(cfg.root)),
             "duration_s": plan.total, "manifest": manifest,
-            "notes": {"voice_s": voice_s, "music": str(music) if music else None, "clips": len(manifest)}}
+            "notes": {"voice_s": voice_s, "music": str(music) if music else None, "clips": len(manifest),
+                      "credits": credits}}
 
 
 def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,

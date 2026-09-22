@@ -34,9 +34,14 @@ Language rules:
   Count carefully — short drafts are the most common mistake.
 
 For every beat add "broll_keywords": 2–4 concrete, visual ENGLISH search terms for stock footage
-(e.g. "auction hammer", "football stadium crowd"). Generic scenes only — never a real person's name,
-logo, or brand, since stock libraries won't have them. When the story is about a specific person,
-prefer objects, places and crowds over close-up faces, so no stranger can be mistaken for them.
+(e.g. "auction hammer", "football stadium crowd"). The channel's footage is FACELESS: objects,
+places, nature, screens, hands, crowds from afar — never words for people (man, woman, executive,
+coach, fan, portrait…), because a stranger's face could be mistaken for someone in the story.
+No real names, logos or brands in keywords either.
+
+If a beat is about a specific real public figure named on the card, add "person": their name exactly
+as on English Wikipedia (e.g. "Gianni Infantino"). We then show a licensed photo of them. Omit
+"person" for anyone who isn't a well-known public figure, and for groups or organisations.
 
 Also write "description_en": 1–2 English sentences for the post caption, and "hashtags": 5–8 tags
 mixing Arabic and English, each starting with #.
@@ -44,7 +49,7 @@ mixing Arabic and English, each starting with #.
 Respond with JSON only. Write Arabic as plain UTF-8 characters — never \u escape sequences.
 Use exactly this shape:
 {"beats": [{"role": "hook", "text": "...", "broll_keywords": ["...", "..."]},
-           {"role": "body", "text": "...", "broll_keywords": ["..."]},
+           {"role": "body", "text": "...", "broll_keywords": ["..."], "person": "Full Name"},
            {"role": "payoff", "text": "...", "broll_keywords": ["..."]},
            {"role": "cta", "text": "...", "broll_keywords": ["..."]}],
  "description_en": "...", "hashtags": ["#...", "#..."]}
