@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     rank_reason   TEXT,
     status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (source, external_id)
 );
 
@@ -113,6 +114,14 @@ CREATE TABLE IF NOT EXISTS metrics (
     retention_pct   REAL
 );
 
+-- Daily API unit spend, e.g. YouTube Data API (10,000 units/day per Google Cloud project).
+CREATE TABLE IF NOT EXISTS api_quota (
+    day     TEXT NOT NULL,                              -- in the API's reset timezone
+    api     TEXT NOT NULL,
+    units   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, api)
+);
+
 -- Key/value control flags, e.g. publishing_paused (Telegram /pause kill switch).
 CREATE TABLE IF NOT EXISTS control (
     key         TEXT PRIMARY KEY,
@@ -131,8 +140,19 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after a table first shipped: (table, column, definition).
+# SQLite can't ALTER ADD a column with a non-constant default, so these use a constant.
+MIGRATIONS = [
+    ("candidates", "last_seen_at", "TEXT"),
+]
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    for table, column, definition in MIGRATIONS:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.commit()
 
 

@@ -31,7 +31,13 @@ def _not_implemented(name: str):
     return run
 
 
+def cmd_discover(cfg, conn, args) -> int:
+    from src.discover.runner import discover
+    return discover(cfg, conn, only=getattr(args, "source", None), dry_run=args.dry_run)
+
+
 HANDLERS = {name: _not_implemented(name) for name in STAGES}
+HANDLERS["discover"] = cmd_discover
 
 
 def cmd_init_db(cfg, conn, args) -> int:
@@ -87,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_, description=help_)
         p.add_argument("--dry-run", action="store_true", help="Show what would happen; no side effects")
         p.set_defaults(func=func)
+        if name == "discover":
+            p.add_argument("--source", action="append", choices=["youtube", "reddit", "trends", "rss"],
+                           help="Only run this source (repeatable)")
     return parser
 
 
@@ -96,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # httpx logs full request URLs at INFO, and those carry API keys in the query string.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     cfg = load_config(args.config)
     conn = db.connect(cfg.db_path)
     try:

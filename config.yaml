@@ -16,17 +16,26 @@ discovery:
   regions: [SD, EG, SA, US]
   youtube:
     enabled: true
-    daily_quota_budget: 8000       # units; API default is 10,000/day
+    # Units/day for discovery. The project's 10,000/day is shared with Shorts uploads
+    # (~1,600 each), so leave room for 3 uploads. Default plan costs ~1,620/day.
+    daily_quota_budget: 5000
+    trending_per_region: 50        # chart=mostPopular, 1 unit per region
     shorts_queries: ["اكتشاف", "حقائق", "tech news", "life hack"]
+    results_per_query: 25          # search.list = 100 units per query per region
+    shorts_lookback_hours: 48
   reddit:
     enabled: true
     subreddits: [todayilearned, technology, worldnews, LifeProTips, sports]
     limit_per_sub: 25
   trends:
     enabled: true
-    geos: [SD, EG, SA, US]
+    geos: [EG, SA, US]             # Google Trends has no trending feed for SD (HTTP 400)
   rss:
     enabled: true
+    max_items_per_feed: 20
+    # Plain URLs or {url, region, name}. Examples:
+    #   - {url: "https://feeds.bbci.co.uk/arabic/rss.xml", region: SD, name: "BBC Arabic"}
+    #   - https://www.youtube.com/feeds/videos.xml?channel_id=<CHANNEL_ID>
     feeds: []
 
 ranking:
