@@ -11,8 +11,10 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The assembler may only ingest media from these directories (transformation guardrail).
-ALLOWED_MEDIA_DIRS = (ROOT / "assets" / "stock", ROOT / "assets" / "generated")
+# The assembler may only ingest media from these directories (transformation guardrail): licensed
+# stock footage, our own generated voice/subtitles, and CC0 music. Never source videos.
+ALLOWED_MEDIA_SUBDIRS = ("assets/stock", "assets/generated", "assets/music")
+ALLOWED_MEDIA_DIRS = tuple(ROOT / d for d in ALLOWED_MEDIA_SUBDIRS)
 
 
 @dataclass

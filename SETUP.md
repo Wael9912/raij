@@ -8,7 +8,7 @@ Consoles change their menus often. If a button name here doesn't match what you 
 ## 0. Local prerequisites
 
 ```bash
-brew install uv ffmpeg-full       # uv = Python manager, ffmpeg-full = ffmpeg with libass (Arabic subs)
+brew install uv ffmpeg            # uv = Python manager; plain ffmpeg is enough (subs are drawn in Python)
 cd ~/Documents/Projects/social-media-automation
 uv sync                           # creates .venv with Python 3.12 + deps
 cp .env.example .env
@@ -98,12 +98,14 @@ uv run python -m src.main --help
 
 ```bash
 ffmpeg -version | head -1
-ffmpeg -hide_banner -filters | grep -E " ass | subtitles "   # libass must be present
+ffmpeg -hide_banner -encoders | grep libx264      # H.264 encoder must be present
 ```
-- If `ass` is missing (the slim Homebrew `ffmpeg` formula has dropped libass), install the full build:
-  `brew install ffmpeg-full`. It's keg-only, so point the pipeline at it with
-  `FFMPEG_BIN=$(brew --prefix ffmpeg-full)/bin/ffmpeg` in `.env`.
-- **Noto Naskh Arabic** gets bundled into `assets/fonts/` in Phase 6 (OFL license). You don't need to install it.
+- libass is **not** needed: Arabic subtitles are shaped and drawn in Python (Pillow + arabic-reshaper +
+  python-bidi) and overlaid by ffmpeg, so the slim Homebrew `ffmpeg` works.
+- Fonts are bundled in `assets/fonts/` (Noto Naskh Arabic Bold + Noto Sans Bold for Latin words, OFL —
+  see `assets/fonts/OFL.txt`). Nothing to install.
+- Optional background music: drop CC0 tracks (mp3/m4a/wav) into `assets/music/`; they're ducked under the
+  voice automatically. With none, videos are voice-only.
 
 ---
 

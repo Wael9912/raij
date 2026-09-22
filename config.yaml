@@ -81,6 +81,7 @@ video:
   height: 1920
   max_seconds: 60
   fps: 30
+  endcard_seconds: 2.0
 
 llm:
   fallback_order: [gemini, groq, ollama]
