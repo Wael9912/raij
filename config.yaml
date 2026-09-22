@@ -98,6 +98,14 @@ video:
   stock_keep_days: 14              # cached stock clips unused this long are deleted after a render
   faceless: true                   # skip stock clips whose previews show a face (public figures get a licensed photo)
 
+publish:
+  max_attempts: 3                  # per (video, platform), across runs; then a Telegram alert
+  max_age_hours: 72                # approvals older than this aren't published (trends go stale)
+  youtube_privacy: public          # public | unlisted | private
+  meta_graph_version: v25.0        # Graph API version for IG/FB Reels
+  poll_seconds: 5                  # Instagram container processing poll
+  poll_timeout_seconds: 600
+
 llm:
   fallback_order: [gemini, groq, ollama]
   # Tried after GEMINI_MODEL (.env) when it is out of free quota, overloaded, or retired. Quotas

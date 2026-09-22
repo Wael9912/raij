@@ -86,6 +86,8 @@ uv run python -m src.main --help
    Then `GET /me/accounts` returns a **Page access token** (it never expires when derived from a long-lived user token). Save it as `META_PAGE_ACCESS_TOKEN`, and the page `id` as `META_PAGE_ID`.
 6. **IG user ID:** `GET /{page-id}?fields=instagram_business_account` → `META_IG_USER_ID`.
    - IG publishing limit: 50 API-published posts per 24h. We post 3–5.
+7. Put the three values in `.env`, then check with `uv run python -m src.main publish --dry-run` (it says `ready`
+   or which key is missing per platform).
 
 ---
 
@@ -94,7 +96,9 @@ uv run python -m src.main --help
 1. Create the channel you'll post to at https://www.youtube.com/account.
 2. In the same Google Cloud project: **APIs & Services → OAuth consent screen**. Choose External and add yourself as a **Test user**.
 3. **Credentials → Create credentials → OAuth client ID → Desktop app.** Download the JSON as `client_secret.json` into the repo root (it's gitignored).
-4. The first `publish` run opens a browser to authorize and stores a refresh token locally (also gitignored).
+4. Run `uv run python -m src.main youtube-auth` once: it opens Google's consent page, then stores a refresh token in
+   `data/youtube.token.json` (gitignored). Scheduled `publish` runs never open a browser; if the token is revoked
+   or expires, publish fails with a message telling you to run `youtube-auth` again.
    - An upload costs ~1,600 quota units, so 3/day plus discovery fits in 10,000.
    - Apps in "Testing" status get refresh tokens that expire after 7 days. Publish the consent screen (no verification is needed for personal use under 100 users) to avoid re-auth.
    - Unverified API projects may have uploads locked to **private**. If that happens, request an audit via the YouTube API Services form.

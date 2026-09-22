@@ -88,6 +88,27 @@ def cmd_bot(cfg, conn, args) -> int:
     return 0
 
 
+def cmd_publish(cfg, conn, args) -> int:
+    from src.publish.runner import publish
+    return publish(cfg, conn, dry_run=args.dry_run)
+
+
+def cmd_youtube_auth(cfg, conn, args) -> int:
+    """One-time browser consent for YouTube uploads; stores a refresh token in data/."""
+    from src.discover.common import make_client
+    from src.publish import youtube
+    if args.dry_run:
+        log.info("[dry run] would open Google consent using %s", youtube.secret_file(cfg).name)
+        return 0
+    if not youtube.secret_file(cfg).exists():
+        log.error("No OAuth client file at %s — see SETUP.md §6", youtube.secret_file(cfg))
+        return 1
+    with make_client() as client:
+        path = youtube.authorize(cfg, client)
+    log.info("YouTube authorized — token saved to %s", path.relative_to(cfg.root))
+    return 0
+
+
 HANDLERS = {name: _not_implemented(name) for name in STAGES}
 HANDLERS["discover"] = cmd_discover
 HANDLERS["rank"] = cmd_rank
@@ -96,6 +117,7 @@ HANDLERS["script"] = cmd_script
 HANDLERS["voice"] = cmd_voice
 HANDLERS["assemble"] = cmd_assemble
 HANDLERS["review"] = cmd_review
+HANDLERS["publish"] = cmd_publish
 
 
 def cmd_init_db(cfg, conn, args) -> int:
@@ -145,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
         **{name: (help_, HANDLERS[name]) for name, help_ in STAGES.items()},
         "run-daily": ("Run every stage in order", cmd_run_daily),
         "bot": ("Listen for Telegram review decisions (long-running)", cmd_bot),
+        "youtube-auth": ("One-time Google consent for YouTube uploads", cmd_youtube_auth),
         "pause": ("Kill switch: halt all publishing", cmd_pause),
         "resume": ("Re-enable publishing", cmd_resume),
     }

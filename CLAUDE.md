@@ -17,7 +17,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9`, `cf0b0b3` | live with Pexels: 5/5 rendered, 45–54s, 7–10 clips, 18–37 MB; faceless b-roll + licensed Commons photos of public figures |
 | 7 Telegram review | ✅ done | `d27ce54`, `47b385c` | live with @Raig88_bot: approve/reject/edit/new b-roll all used by the owner; #13 #17 #19 approved, #14 #16 rejected. Late-tap bug found live + fixed |
 | 6.5 Visual polish | ✅ done | `398a58c` | Cairo Black via raqm, xfade transitions, hook title + series badge, logo, progress bar. #13/#17/#19 re-rendered as #20/#21/#22 → **awaiting owner re-approval** |
-| 8 Publish | ⏭ **next** | | see plan below |
+| 8 Publish | 🟡 built | (this commit) | all four publishers built + mock-tested; live: TikTok export of #20 #21 ✅. **YouTube/IG/FB never run live** — no Meta keys, no `client_secret.json` |
 | 9 Analytics + runner | ⬜ | | |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
@@ -131,29 +131,34 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
 
 ## Next up
 
-1. Owner re-reviews **#20 #21 #22** (polished re-renders of approved #13 #17 #19, which are now `superseded`; their
-   old approval rows stay but Phase 8 only publishes a video with an approval row for *that exact id*).
-   Apply any look feedback in `src/assemble/brand.py` / `subtitles.Style` / `config.yaml` `video:`.
-2. Phase 8 Publish (below) — blocked on Meta + YouTube OAuth keys.
+1. **Owner:** Meta keys (`META_PAGE_ID`, `META_IG_USER_ID`, `META_PAGE_ACCESS_TOKEN`, SETUP §5) and YouTube
+   (`client_secret.json` in repo root + `uv run python -m src.main youtube-auth`, SETUP §6). Then run `publish`
+   live on #20/#21 — they're `approved` with TikTok exported and still owe YT/IG/FB (72h approval window from
+   2026-09-22 14:37 UTC; after that raise `publish.max_age_hours` or re-approve). First live run: check the
+   Graph API version (`publish.meta_graph_version: v25.0`) isn't rejected, and whether YouTube locks uploads to
+   private (unverified project). #23 (new b-roll of #19/#22) is in review.
+2. Phase 9: analytics + `run-daily` runner (bot as a service, cron).
 
-## Plan — Phase 8 (Publish)
+## Phase 8 (Publish) — as built
 
-**Prerequisites (user):** Meta (`META_PAGE_ID`, `META_IG_USER_ID`, `META_PAGE_ACCESS_TOKEN`, SETUP §5) and YouTube
-OAuth (`YOUTUBE_OAUTH_CLIENT_SECRET_FILE`, SETUP §6). And Telegram first, so there are real approvals.
-
-Input: videos `status='approved'` with an `approvals` row `decision='approved'` for **that exact video id**.
-Hard rules: no approval row → never publish; `db.publishing_paused()` → publish nothing (log + Telegram note).
-- `posts` row per (video, platform) — UNIQUE already — `queued → published | failed | exported`, `attempts`, error.
-- **YouTube Shorts** (`publish/youtube.py`): OAuth installed-app flow once (token cached in `data/`, gitignored),
-  `videos.insert` resumable upload, title ≤100 chars (from hook), description = description_en + hashtags +
-  **photo credits** + "#Shorts"; `categoryId` from category; `selfDeclaredMadeForKids=false`. 1,600 quota units.
-- **Instagram Reels** (`publish/instagram.py`): Graph API needs a public video URL or resumable upload
-  (`upload_type=resumable` to rupload.facebook.com) → create container `media_type=REELS` → poll status → publish.
-- **Facebook Reels** (`publish/facebook.py`): `/{page-id}/video_reels` start → upload → finish with description.
-- **TikTok**: copy MP4 + caption .txt to `data/export/tiktok/<date>/` → status `exported`.
-- Retries with backoff; after the last failure → Telegram alert. Idempotent: published posts are never redone.
-- Tests: approval gate (no row / row for another video → refused), pause, per-platform request flows mocked,
-  resumable upload chunking, partial failure, TikTok export, dry run.
+- `src/publish/runner.py`: `eligible()` = `videos.status='approved'` AND the latest approve/reject row for that exact
+  video id is `approved` (edit/new_broll/revoice rows aren't verdicts), approved within `publish.max_age_hours` (72).
+  Paused → nothing, plus a Telegram note. Video file goes through `render.guard()`.
+- `posts` row per (video, platform), created only when the platform is configured (`missing(cfg)` → reason or None),
+  so adding keys later picks up approved videos. `attempts` incremented before each try; failure → `failed` + error,
+  retried next runs until `publish.max_attempts` (3), then one Telegram alert. Published/exported never redone.
+  All platforms of the brand done → video `published`. Successes and final failures → one Telegram summary.
+- Caption (`publish/common.post_text`): hook title (or spoken hook) + description_en + hashtags + "المصادر: domains"
+  + "📷 credit" lines (CC BY requirement).
+- YouTube (`publish/youtube.py`, plain httpx): `youtube-auth` = loopback OAuth + PKCE, scopes upload + readonly +
+  yt-analytics.readonly (Phase 9 needs no re-auth); refresh token in `data/youtube.token.json` (0600). Upload =
+  resumable session, 8 MiB `Content-Range` chunks, 308 → resume from server's `Range`. Title = hook title + " #Shorts",
+  categoryId by story category, `defaultLanguage=ar`, `selfDeclaredMadeForKids=false`, privacy from config.
+- Instagram/Facebook (`publish/meta.py`): IG `/{ig}/media` REELS `upload_type=resumable` → bytes to rupload
+  (`Authorization: OAuth`, `offset`, `file_size`) → poll `status_code` → `media_publish` → permalink. FB
+  `/{page}/video_reels` start → rupload → finish `video_state=PUBLISHED`. Final publish/finish calls use `retries=0`
+  so a flaky 5xx can't double-post (the next run retries the whole post instead). Tokens only in POST bodies/headers.
+- TikTok: MP4 + caption .txt copied to `data/export/tiktok/<date>/<video_id>.*` → `exported`.
 
 ## Later phases — watch-outs
 
