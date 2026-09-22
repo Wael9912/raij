@@ -12,8 +12,8 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 1 Discovery | ✅ done | `3c5728d`, `a877314` | live: 141 candidates/run keyless (Trends + 6 RSS). YouTube/Reddit coded + tested with mocks, **never run live** (no keys yet) |
 | 2 Rank & Select | ✅ done | `40288ba`, `e59f351` | live with Gemini: 30 screened → 5 selected, political flagged |
 | 3 Extract | ✅ done | `7672048`, `affe555` | live: 5/5 story cards (3 trends via news articles, 2 RSS articles). yt-dlp subs verified live on a real video; whisper fallback mocked only (`uv sync --group whisper` not installed) |
-| 4 Script | ⏭ next | | see plan below |
-| 5 Voice | ⬜ | | |
+| 4 Script | ✅ done | `d860e76`, `dde9d8c` | live: 5/5 passed (3.5/3.6-flash); Arabic-source similarity 0.06–0.10; number gate caught 211→201, 953,531→995,000 |
+| 5 Voice | ⏭ next | | see plan below |
 | 6 Assemble | ⬜ | | |
 | 7 Telegram review | ⬜ | | |
 | 8 Publish | ⬜ | | |
@@ -61,27 +61,35 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   else headlines. Candidate → `extracted`; no usable text / LLM says unusable → `extract_failed`; LLM outage
   leaves it `selected` for the next run. `stories.sources` = URLs used; cards also in `data/extract/<date>.json`.
 - faster-whisper is an optional dep group (heavy for 8 GB); only used when a video has no subs and ≤900s.
+- LLM chain: GEMINI_MODEL → `llm.gemini_fallback_models` (full flash 3.7/3.6/3.5/3-preview, then lite, Gemma).
+  404/429 → model skipped for the run; 503 → 1 retry unless last; unparseable output → same provider re-asked once.
+  **flash-lite writes poor Arabic** (typos, stray katakana, wrong numbers) — keep it late in the chain.
+- Script: card-only prompt (`script_write.txt`); model asked for 120–140 words, 110–150 accepted (models undershoot).
+  Numbers as **digits** so `script/facts.py` can check each against the card (rounding allowed only below the
+  figure's last non-zero digit; ≤12 unchecked). Spelled-out figures ("مليون") are not checked — Phase 7 review.
+  Similarity = normalized Arabic word-trigram containment (`script/similarity.py`); real retellings score
+  0.05–0.15 vs threshold 0.35; English sources skip the gate (similarity NULL). One retry per failed check that
+  names the problem; a gate-failed draft is kept as `superseded` beside its rewrite. `write_script(edit_note=)`
+  is the hook for Phase 7 "✏️ Edit script".
 
-## Plan — Phase 4 (Script)
+## Plan — Phase 5 (Voice)
 
-Input: `stories` with no `scripts` row. Output: one `scripts` row per story per brand (start with 1 brand).
-- Prompt `src/prompts/script_ar.txt` gets **only the story card** (hook, key_facts, claims, why_trending) +
-  brand tone from `config.brands` — never `stories.transcript`.
-- Structure: hook (≤3s) → body beats → payoff → CTA, `script.min_words`–`max_words` (110–150) Arabic words.
-  Beats JSON `[{text, broll_keywords}]` (English stock-search keywords, 2–4 per beat); EN description + hashtags.
-- Similarity gate vs `stories.transcript`: cheap, offline — char n-gram (e.g. 4-gram) Jaccard/containment on
-  normalized Arabic (strip diacritics/tatweel, unify alef/yaa/taa marbuta). N-grams can't compare an Arabic
-  script to an English source, so gate only Arabic-source stories; for English sources the card-only prompt is
-  the safeguard and `scripts.similarity` stays NULL. Above `script.similarity_threshold` → rewrite
-  once with a "rephrase more freely" note → else status `rejected`.
-- Validate word count and beat shape; out-of-range → one retry, then `rejected` with reason in notes.
-- Status `passed` when gate + validation pass. Tests: Arabic normalization, n-gram similarity, gate → rewrite →
-  reject path, prompt never contains transcript text, dry run.
-- LLM budget: ≥5 calls/day (+rewrites); fits flash-lite/Gemma fallback. Consider a free Groq key as backup.
+Input: `scripts` with `status='passed'` and no `videos` row. Output: a `videos` row per script
+(`voice_path`, `duration_s`, `status='voiced'`) + audio in `assets/generated/voice/<script_id>.mp3` and word
+timings in `…/<script_id>.words.json` (Phase 6 needs them for karaoke subtitles).
+- `edge-tts` (free, keyless, needs network): brand voice/rate/pitch from `config.brands[].voice`. Custom SSML
+  is blocked by the service now — get pauses from punctuation / one beat per sentence break instead. Request
+  `WordBoundary` events for timings (newer edge-tts defaults to SentenceBoundary).
+- Loudness: ffmpeg `loudnorm` two-pass to `voice.target_lufs` (−14), then measure duration with ffprobe.
+- Duration gate 40–60s (`video.max_seconds`): too long → re-synthesize once at a faster rate (+10%); still too
+  long → `failed` with reason. Too short → keep, warn.
+- Check live how the Arabic voice reads digits ("17,000", "01:11", "953,531"); if badly, add a digits→words
+  step for TTS only (the script text in the DB and subtitles keep digits).
+- Tests: mock the synthesizer (no network), loudnorm command construction, duration gate paths, idempotent,
+  dry run. Output must land only under `assets/generated/` (guardrail for Phase 6).
 
 ## Later phases — watch-outs
 
-- Phase 4 similarity gate compares script vs `stories.transcript`; the transcript must never be in the script prompt.
 - Phase 6 guardrail: assembler may only read from `config.ALLOWED_MEDIA_DIRS` (`assets/stock`, `assets/generated`).
 - Phase 8: no publish without an `approvals` row; respect `db.publishing_paused()`.
 - YouTube quota (10k/day) is shared between discovery (~1,620/day) and Shorts uploads (~1,600 each).
