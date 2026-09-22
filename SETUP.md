@@ -121,10 +121,24 @@ ffmpeg -hide_banner -encoders | grep libx264      # H.264 encoder must be presen
 
 ---
 
-## Daily run (Phase 9)
+## Running without a terminal (Phase 9)
 
-```cron
-0 7 * * *  cd ~/Documents/Projects/social-media-automation && uv run python -m src.main run-daily >> data/cron.log 2>&1
+```bash
+uv run python -m src.main install-services     # bot + daily pipeline + publish job, as macOS launchd agents
+uv run python -m src.main services             # status of the three jobs
+uv run python -m src.main uninstall-services   # stop and remove them
 ```
 
-Kill switch: `/pause` in Telegram, or `uv run python -m src.main pause`.
+- `com.raij.bot` — Telegram review bot, always on, restarted automatically if it crashes.
+- `com.raij.daily` — `run-daily` at `schedule.run_daily_at` (07:00 local): discover → rank → extract → script →
+  voice → assemble → review (cards to Telegram) → publish → report. Problems → a Telegram notice.
+- `com.raij.publish` — `publish` every 30 min (`publish.every_minutes`), so an approval goes live within ~30 min.
+- Logs: `data/logs/{bot,daily,publish}.log`. Services start at login; after changing code, re-run
+  `install-services` (or `launchctl kickstart -k gui/$(id -u)/com.raij.bot`) so the bot reloads.
+- The Mac must be **on and awake** for jobs to run. Asleep at 07:00 → the daily run starts on wake; Telegram
+  taps made meanwhile are handled when it wakes. To keep it awake while plugged in: System Settings → Displays
+  → Advanced → "Prevent automatic sleeping when the display is off" (or Battery → Options on laptops).
+- Cron alternative (if you don't want launchd):
+  `0 7 * * *  cd ~/Documents/Projects/social-media-automation && /opt/homebrew/bin/uv run python -m src.main run-daily >> data/logs/daily.log 2>&1`
+
+Telegram commands: `/status`, `/pause` (kill switch — nothing publishes), `/resume`, `/report` (weekly report now).

@@ -18,6 +18,7 @@ import httpx
 
 from src import llm
 from src.config import Config
+from src.analytics.report import winners_prompt
 from src.script import titles
 from src.script.write import write_script
 
@@ -65,9 +66,10 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
     report, retry = [], []
     passed_stories: set[int] = set()
     done_stories: set[int] = set()
+    winners = winners_prompt(conn) if work else ""       # last week's best hook titles as examples
     for brand, story in work:
         try:
-            outcome = write_script(cfg, story, brand, client=client)
+            outcome = write_script(cfg, story, brand, client=client, winners=winners)
         except llm.LLMError as exc:
             log.error("Story %d (%s): no LLM answered, will retry next run: %s", story["id"], brand["id"], exc)
             retry.append({"story_id": story["id"], "brand": brand["id"], "error": str(exc)})

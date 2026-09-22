@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from src import llm
+from src.analytics.report import winner_boost
 from src.config import Config
 from src.rank.retellability import classify
 from src.rank.score import score_rows
@@ -58,9 +59,10 @@ def _entry(row: dict[str, Any], parts: dict[str, float] | None = None) -> dict[s
 
 
 def pick(rows: list[dict[str, Any]], need: int, categories: set[str], max_per_category: int,
-         already: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+         already: list[dict[str, Any]] | None = None, boost: dict[str, float] | None = None) -> list[dict[str, Any]]:
     """Highest-scoring retellable rows: at most max_per_category per category and one per topic,
-    counting what was `already` selected today."""
+    counting what was `already` selected today. `boost` multiplies scores by category (recent winners)."""
+    boost = boost or {}
     counts: dict[str, int] = {}
     topics: set[str] = set()
     for r in already or []:
@@ -68,7 +70,7 @@ def pick(rows: list[dict[str, Any]], need: int, categories: set[str], max_per_ca
         if r.get("topic"):
             topics.add(r["topic"])
     chosen = []
-    for r in sorted(rows, key=lambda r: r["score"] or 0, reverse=True):
+    for r in sorted(rows, key=lambda r: (r["score"] or 0) * boost.get(r["category"], 1.0), reverse=True):
         if len(chosen) >= need:
             break
         if r["retellable"] != 1 or r["status"] != "ranked" or r["category"] not in categories:
@@ -141,7 +143,10 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
             status = "partial"
         conn.commit()
 
-    chosen = pick(list(by_id.values()), need, categories, max_per_cat, already)
+    boost = winner_boost(conn, cfg.get("ranking.winner_boost", 0.15))
+    if boost:
+        log.info("Recent winners boost categories: %s", ", ".join(sorted(boost)))
+    chosen = pick(list(by_id.values()), need, categories, max_per_cat, already, boost=boost)
     stamp = now.strftime("%Y-%m-%d %H:%M:%S")
     for r in chosen:
         conn.execute("UPDATE candidates SET status = 'selected', selected_at = ? WHERE id = ?", (stamp, r["id"]))

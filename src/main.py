@@ -109,6 +109,36 @@ def cmd_youtube_auth(cfg, conn, args) -> int:
     return 0
 
 
+def cmd_report(cfg, conn, args) -> int:
+    from src.analytics.runner import report
+    return report(cfg, conn, dry_run=args.dry_run, weekly=True if getattr(args, "weekly", False) else None)
+
+
+def cmd_install_services(cfg, conn, args) -> int:
+    from src import service
+    if args.dry_run:
+        for label, spec in service.plists(cfg).items():
+            log.info("[dry run] %s: %s", label, " ".join(spec["ProgramArguments"][-1:]))
+        return 0
+    for path in service.install(cfg):
+        log.info("Installed %s", path)
+    log.info("Logs: data/logs/ — status: `uv run python -m src.main services`")
+    return 0
+
+
+def cmd_uninstall_services(cfg, conn, args) -> int:
+    from src import service
+    log.info("Removed: %s", ", ".join(service.uninstall()) or "nothing was installed")
+    return 0
+
+
+def cmd_services(cfg, conn, args) -> int:
+    from src import service
+    for label, state in service.status().items():
+        print(f"{label:18} {state}")
+    return 0
+
+
 HANDLERS = {name: _not_implemented(name) for name in STAGES}
 HANDLERS["discover"] = cmd_discover
 HANDLERS["rank"] = cmd_rank
@@ -118,6 +148,7 @@ HANDLERS["voice"] = cmd_voice
 HANDLERS["assemble"] = cmd_assemble
 HANDLERS["review"] = cmd_review
 HANDLERS["publish"] = cmd_publish
+HANDLERS["report"] = cmd_report
 
 
 def cmd_init_db(cfg, conn, args) -> int:
@@ -130,17 +161,32 @@ def cmd_init_db(cfg, conn, args) -> int:
 
 
 def cmd_run_daily(cfg, conn, args) -> int:
-    """Chain all stages; one stage failing must not kill the rest."""
-    failures = []
-    for name in STAGES:
-        if name == "publish" and db.publishing_paused(conn):
-            log.warning("Publishing is paused (kill switch) — skipping publish")
-            continue
+    """Chain all stages; one stage failing must not kill the rest. Failures are sent to Telegram."""
+    from src.lock import Busy, single
+    try:
+        with single(cfg.root, "run-daily"):
+            failures = []
+            for name in STAGES:
+                if name == "publish" and db.publishing_paused(conn):
+                    log.warning("Publishing is paused (kill switch) — skipping publish")
+                    continue
+                try:
+                    code = HANDLERS[name](cfg, conn, args)
+                except Exception:
+                    log.exception("Stage '%s' failed; continuing", name)
+                    code = 1
+                if code:
+                    failures.append(name)
+    except Busy as exc:
+        log.warning("run-daily skipped: %s", exc)
+        return 0
+    if failures and not args.dry_run:
         try:
-            HANDLERS[name](cfg, conn, args)
-        except Exception:
-            log.exception("Stage '%s' failed; continuing", name)
-            failures.append(name)
+            from src.review.runner import make_bot
+            bot, chat = make_bot(cfg)
+            bot.send_message(chat, f"⚠️ Daily run: {', '.join(failures)} had problems — see data/logs/daily.log")
+        except Exception as exc:
+            log.warning("Couldn't send the failure notice: %s", exc)
     return 1 if failures else 0
 
 
@@ -168,6 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
         "run-daily": ("Run every stage in order", cmd_run_daily),
         "bot": ("Listen for Telegram review decisions (long-running)", cmd_bot),
         "youtube-auth": ("One-time Google consent for YouTube uploads", cmd_youtube_auth),
+        "install-services": ("Run bot, daily pipeline and publishing in the background (launchd)",
+                             cmd_install_services),
+        "uninstall-services": ("Stop and remove the background services", cmd_uninstall_services),
+        "services": ("Show background service status", cmd_services),
         "pause": ("Kill switch: halt all publishing", cmd_pause),
         "resume": ("Re-enable publishing", cmd_resume),
     }
@@ -178,6 +228,8 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "discover":
             p.add_argument("--source", action="append", choices=["youtube", "reddit", "trends", "rss"],
                            help="Only run this source (repeatable)")
+        if name == "report":
+            p.add_argument("--weekly", action="store_true", help="Send the weekly report to Telegram now")
     return parser
 
 

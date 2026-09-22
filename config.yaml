@@ -64,6 +64,7 @@ ranking:
   max_per_category: 2              # keep the daily picks varied
   categories: [news-lite, tech, life-hack, sports, culture, wow-facts]
   flagged_categories: [political]  # never auto-scheduled
+  winner_boost: 0.15               # score ×1.15 for categories of last week's best videos (0 = off)
 
 extract:
   max_articles: 3                  # trends: read up to this many linked news articles
@@ -100,6 +101,7 @@ video:
 
 publish:
   max_attempts: 3                  # per (video, platform), across runs; then a Telegram alert
+  every_minutes: 30                # launchd publish job interval (install-services)
   max_age_hours: 72                # approvals older than this aren't published (trends go stale)
   youtube_privacy: public          # public | unlisted | private
   meta_graph_version: v25.0        # Graph API version for IG/FB Reels
@@ -115,4 +117,9 @@ llm:
                            gemini-flash-lite-latest, gemma-4-31b-it]
 
 schedule:
-  run_daily_at: "07:00"
+  run_daily_at: "07:00"            # local time; launchd job com.raij.daily (install-services)
+
+analytics:
+  track_days: 30                   # keep pulling metrics for posts this recent
+  report_days: 7                   # weekly report window
+  report_weekday: 0                # 0 = Monday; sent once per ISO week by the daily run (or /report)

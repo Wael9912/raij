@@ -123,7 +123,7 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"  • {i}" for i in items) or "  • (none)"
 
 
-def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str = "") -> str:
+def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str = "", winners: str = "") -> str:
     claims = [f"{c.get('claim')} ({c.get('source') or 'source'})" for c in json.loads(story.get("claims") or "[]")]
     return llm.load_prompt(
         "script_write",
@@ -138,16 +138,17 @@ def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extr
         target_max=str(cfg.get("script.max_words", 115) - 10),
         series=" / ".join(f'"{v}"' for v in (brand.get("series") or {}).values()) or "(none — omit it)",
         extra=f"\n{extra.strip()}\n" if extra.strip() else "",
+        winners=f"\n{winners.strip()}\n" if winners.strip() else "",
     )
 
 
 def draft(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str = "",
-          client: httpx.Client | None = None) -> Draft:
+          client: httpx.Client | None = None, winners: str = "") -> Draft:
     """One draft; if it breaks the rules, retry once telling the model what was wrong."""
     lo, hi = cfg.get("script.min_words", 85), cfg.get("script.max_words", 115)
 
     def attempt(note: str) -> Draft:
-        d = validate(llm.complete_json(cfg, build_prompt(cfg, story, brand, note), client=client), lo, hi)
+        d = validate(llm.complete_json(cfg, build_prompt(cfg, story, brand, note, winners), client=client), lo, hi)
         bad = facts.unsupported(d.body_ar, story)
         if bad:
             raise DraftError(f"these numbers are not on the story card: {', '.join(bad)} — use only the "
@@ -176,14 +177,14 @@ def _rejected(exc: DraftError, version: int) -> dict[str, Any]:
 
 
 def write_script(cfg: Config, story: dict[str, Any], brand: dict[str, Any], edit_note: str = "",
-                 client: httpx.Client | None = None) -> Outcome:
+                 client: httpx.Client | None = None, winners: str = "") -> Outcome:
     """Draft → similarity gate → at most one rewrite. Raises llm.LLMError if no model answers."""
     threshold = cfg.get("script.similarity_threshold", 0.35)
     source = story.get("transcript") or ""
     extra = f"EDITOR'S NOTE — apply this: {edit_note}" if edit_note else ""
     out = Outcome()
     try:
-        d = draft(cfg, story, brand, extra, client=client)
+        d = draft(cfg, story, brand, extra, client=client, winners=winners)
     except DraftError as exc:
         out.versions.append(_rejected(exc, 1))
         return out
@@ -208,7 +209,7 @@ def write_script(cfg: Config, story: dict[str, Any], brand: dict[str, Any], edit
                    f"own words with a different angle and sentence structure. Avoid these phrases: "
                    f"{' | '.join(phrases)}")
         try:
-            d = draft(cfg, story, brand, rewrite, client=client)
+            d = draft(cfg, story, brand, rewrite, client=client, winners=winners)
         except DraftError as exc:
             out.versions.append(_rejected(exc, 2))
             return out

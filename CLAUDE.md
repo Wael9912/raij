@@ -18,11 +18,13 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 7 Telegram review | ✅ done | `d27ce54`, `47b385c` | live with @Raig88_bot: approve/reject/edit/new b-roll all used by the owner; #13 #17 #19 approved, #14 #16 rejected. Late-tap bug found live + fixed |
 | 6.5 Visual polish | ✅ done | `398a58c` | Cairo Black via raqm, xfade transitions, hook title + series badge, logo, progress bar. #13/#17/#19 re-rendered as #20/#21/#22 → **awaiting owner re-approval** |
 | 8 Publish | 🟡 YouTube + TikTok live | `191dbef` | 2026-09-22: #20 #21 #23 live as public Shorts on channel رائج (UCeLlvJwQe-uj4IEZEsO3YIw), processed OK, not locked to private; TikTok exported. **IG/FB not run live** — Meta keys pending |
-| 9 Analytics + runner | ⬜ | | |
+| 9 Analytics + runner | ✅ done | (this commit) | live: YouTube metrics for 3 Shorts, weekly report sent; launchd bot/daily/publish installed and running. IG/FB insights mock-only |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
-Missing: YouTube, Reddit, Groq, Pixabay, Meta, YouTube OAuth. The review `bot` is NOT a service yet (Phase 9):
-start it with `uv run python -m src.main bot` whenever reviews are pending — taps queue until it runs.
+Missing: YouTube API key (discovery), Reddit, Groq, Pixabay, Meta. YouTube OAuth ✅ (`data/youtube.token.json`).
+**Services run via launchd** (`install-services`): bot always on, `run-daily` 07:00, `publish` every 30 min; logs in
+`data/logs/`. After editing code, `install-services` again (restarts the bot). Don't start a second bot by hand
+(two pollers fight over getUpdates).
 Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** — subtitles are drawn in Python instead.
 `libraqm` is installed via Homebrew (Arabic shaping for Pillow, see `src/textshape.py`).
 
@@ -137,7 +139,25 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
    Then `publish` posts #20 #21 #23 to IG/FB (still `approved`, owing only IG/FB) if within 72h of approval
    (≈2026-09-25 14:37 UTC; else raise `publish.max_age_hours`). Check `publish.meta_graph_version: v25.0` is accepted.
    YouTube is done: OAuth consent screen published (In production), token in `data/youtube.token.json`.
-2. Phase 9: analytics + `run-daily` runner (bot as a service, cron).
+2. Watch the first unattended daily runs (07:00): `data/logs/daily.log`, Telegram cards. Gemini free quota
+   (20 req/day on flash-latest, fallbacks after) is the likely bottleneck with 5 picks/day.
+3. Later: YouTube Data API key for YouTube discovery; Pixabay key; CC0 music in `assets/music/`.
+
+## Phase 9 (Analytics + runner) — as built
+
+- `report` stage (`src/analytics/`): per platform collectors → `metrics` (one row per post per UTC day, replaced on
+  re-run). YouTube: `videos.list` statistics + YouTube Analytics `reports` (avg view duration/percentage, shares;
+  1–2 days lag; failure keeps counts). IG `/{media}/insights` (views, likes, comments, shares, avg watch; fallback
+  metric set), FB `/{video}/video_insights` — both mock-only. Weekly report (`report.weekly_text`) on
+  `analytics.report_weekday` (Monday) once per ISO week (`control.weekly_report_week`), `report --weekly` or
+  Telegram `/report` sends now.
+- Feedback: `report.winners` = top 3 last-7-day videos with views. `ranking.winner_boost` (0.15) multiplies pick
+  scores for winners' categories (`rank.pick(boost=)`); script prompt gets `{{winners}}` few-shot of winning hook
+  titles (`write_script(winners=)`). Both empty until there's data.
+- Runner: `src/service.py` writes launchd agents (`com.raij.bot` KeepAlive, `com.raij.daily` calendar,
+  `com.raij.publish` interval) with absolute uv path and Homebrew PATH. `src/lock.py` flock locks: `publish` and
+  `run-daily` never overlap themselves (a busy publish returns 0). SQLite `timeout=30` for the shared DB.
+  `run-daily` counts non-zero stage exits as problems and sends one Telegram notice.
 
 ## Phase 8 (Publish) — as built
 

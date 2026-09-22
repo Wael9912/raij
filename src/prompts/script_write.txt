@@ -49,7 +49,7 @@ And "series": the one of these channel series that fits the story best: {{series
 
 Also write "description_en": 1–2 English sentences for the post caption, and "hashtags": 5–8 tags
 mixing Arabic and English, each starting with #.
-{{extra}}
+{{winners}}{{extra}}
 Respond with JSON only. Write Arabic as plain UTF-8 characters — never \u escape sequences.
 Use exactly this shape:
 {"beats": [{"role": "hook", "text": "...", "broll_keywords": ["...", "..."]},

@@ -22,6 +22,7 @@ from src import db
 from src.assemble.render import guard
 from src.config import Config
 from src.discover.common import FetchError, make_client
+from src.lock import Busy, single
 from src.publish import meta, tiktok, youtube
 from src.publish.common import Posted, PostText, PublishError, PublishSkipped, post_text
 
@@ -80,6 +81,19 @@ def _notify(cfg: Config, lines: list[str], bot=None) -> None:
 
 def publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,
             platforms: dict | None = None, bot=None) -> int:
+    """One publisher at a time across processes (scheduled job + run-daily), so nothing uploads twice."""
+    if dry_run:
+        return _publish(cfg, conn, True, client, platforms, bot)
+    try:
+        with single(cfg.root, "publish"):
+            return _publish(cfg, conn, False, client, platforms, bot)
+    except Busy as exc:
+        log.info("Publish skipped: %s", exc)
+        return 0
+
+
+def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx.Client | None,
+             platforms: dict | None, bot) -> int:
     platforms = platforms or PLATFORMS
     max_attempts = int(cfg.get("publish.max_attempts", 3))
     videos = eligible(conn, cfg.get("publish.max_age_hours", 72))

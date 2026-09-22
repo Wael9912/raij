@@ -7,7 +7,7 @@ the DB (videos.status, approvals, control flags), so the bot can be restarted at
   ✏️ Edit script          → asks for a note; the reply regenerates script → voice → video
   🔁 New b-roll           → same voice, re-assembled without the previous clips
   🎙 Re-voice             → the brand's alternate voice, re-assembled
-  /pause /resume /status
+  /pause /resume /status /report
 A regenerated video is a new row (parent_id = old) sent for review; the old one is 'superseded'.
 """
 from __future__ import annotations
@@ -120,6 +120,9 @@ class Handler:
                 self.bot.send_message(self.chat, "▶️ Publishing resumed.")
             elif cmd in ("/status", "/start"):
                 self.bot.send_message(self.chat, self.status())
+            elif cmd == "/report":
+                from src.analytics.runner import send_weekly
+                self._soft(send_weekly, self.cfg, self.conn, self.bot)
             return
         pending = json.loads(db.get_flag(self.conn, "pending_edit") or "null")
         if pending and text:
