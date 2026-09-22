@@ -18,6 +18,7 @@ import httpx
 
 from src import llm
 from src.config import Config
+from src.script import titles
 from src.script.write import write_script
 
 log = logging.getLogger("raij.script")
@@ -95,6 +96,8 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
             status = "scripted" if story_id in passed_stories else "script_rejected"
             conn.execute("UPDATE candidates SET status = ? WHERE id = (SELECT candidate_id FROM stories WHERE id = ?)",
                          (status, story_id))
+
+    titles.backfill(cfg, conn, client=client)            # scripts from before hook titles existed
 
     passed = sum(1 for r in report if r["status"] == "passed")
     if not work or passed == len(work):

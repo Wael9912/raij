@@ -10,7 +10,16 @@ brands:
       alt: ar-SA-HamedNeural       # used by the review bot's 🎙 Re-voice button
       rate: "+10%"                 # Shorts pacing; Arabic neural voices speak ~1.85 words/s at +0%
       pitch: "+0Hz"
-    subtitle_font: "Noto Naskh Arabic"
+    subtitle_font: "Cairo Black"   # assets/fonts/Cairo-Variable.ttf, shaped by raqm
+    # Series badge shown with the hook title and on the end card, by story category. The script
+    # LLM may pick another name from this list when it fits better.
+    series:
+      wow-facts: "هل تعلم؟"
+      tech: "عالم التقنية"
+      sports: "رياضة في دقيقة"
+      culture: "حكايات"
+      news-lite: "رائج اليوم"
+      life-hack: "حيلة اليوم"
     platforms: [instagram, facebook, youtube, tiktok_export]
 
 discovery:
@@ -83,6 +92,9 @@ video:
   max_seconds: 60
   fps: 30
   endcard_seconds: 2.0
+  transition_seconds: 0.3          # xfade overlap per cut (0 = hard cuts)
+  hook_title_seconds: 2.5          # on-screen hook title at the start; subtitles begin after it
+  progress_bar: true               # thin yellow bar across the top
   stock_keep_days: 14              # cached stock clips unused this long are deleted after a render
   faceless: true                   # skip stock clips whose previews show a face (public figures get a licensed photo)
 

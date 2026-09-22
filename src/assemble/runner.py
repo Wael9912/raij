@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from src.assemble import broll, portrait, render, subtitles
+from src.assemble import brand, broll, portrait, render, subtitles
 from src.config import Config
 from src.discover.common import make_client
 
@@ -26,11 +26,14 @@ log = logging.getLogger("raij.assemble")
 MUSIC_EXT = {".mp3", ".m4a", ".wav", ".ogg", ".flac"}
 
 
+# A video row plus what assemble_video needs from its script and story.
+VIDEO_SELECT = ("SELECT v.*, x.beats, x.brand_id, x.notes AS script_notes, c.category FROM videos v "
+                "JOIN scripts x ON x.id = v.script_id LEFT JOIN stories s ON s.id = x.story_id "
+                "LEFT JOIN candidates c ON c.id = s.candidate_id")
+
+
 def _pending(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        "SELECT v.*, x.beats, x.brand_id FROM videos v JOIN scripts x ON x.id = v.script_id "
-        "WHERE v.status = 'voiced' ORDER BY v.id"
-    ).fetchall()
+    rows = conn.execute(f"{VIDEO_SELECT} WHERE v.status = 'voiced' ORDER BY v.id").fetchall()
     return [dict(r) for r in rows]
 
 
@@ -98,7 +101,7 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
             photos[person] = portrait.find(cfg, client, person)
         photo = photos.get(person) if person else None
         if photo:
-            frame = portrait.compose(cfg.root / photo.path, photo.credit, work / f"photo_{i}.jpg", renderer)
+            frame = portrait.compose(cfg.root / photo.path, photo.credit, work / f"photo_{i}.jpg")
             paths.append(frame.relative_to(cfg.root))
             manifest.append({"provider": "wikimedia", "id": photo.file, "page": photo.page, "author": photo.author,
                              "license": photo.license, "credit": photo.credit, "person": person,
@@ -118,11 +121,20 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
 
     segments = render.segments_for(spans, clips_per_beat, voice_s)
     total = sum(s.seconds for s in segments) + endcard_s
-    subs_list = subtitles.render_sequence(timing["words"], spans, work, total, renderer)
-    card = render.endcard(_brand(cfg, video["brand_id"]), work / "endcard.png", renderer)
+    look = _brand(cfg, video["brand_id"])
+    script_notes = json.loads(video.get("script_notes") or "{}")
+    series = brand.series_name(look, video.get("category"), script_notes.get("series"))
+    title = script_notes.get("hook_title")
+    hook_s = float(cfg.get("video.hook_title_seconds", 2.5)) if title else 0.0
+    subs_list = subtitles.render_sequence(timing["words"], spans, work, total, renderer, hide_until=hook_s)
+    card = brand.endcard(look, work / "endcard.png", series)
     music = _music(cfg, video["id"])
     plan = render.Plan(segments, Path(video["voice_path"]), subs_list, renderer.style.top, card, endcard_s,
-                       out_dir / f"{video['id']}.mp4", music=music)
+                       out_dir / f"{video['id']}.mp4", music=music,
+                       hook_list=brand.hook_sequence(title, series, work, hook_s) if title else None,
+                       logo=brand.logo_layer(look, work / "logo.png"),
+                       transition=float(cfg.get("video.transition_seconds", 0.3)),
+                       progress_bar=bool(cfg.get("video.progress_bar", True)))
     render.render(cfg, plan, run=run)
 
     srt_path = out_dir / f"{video['id']}.srt"
@@ -131,7 +143,7 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     return {"video_path": str(plan.out.relative_to(cfg.root)), "subtitle_path": str(srt_path.relative_to(cfg.root)),
             "duration_s": plan.total, "manifest": manifest,
             "notes": {"voice_s": voice_s, "music": str(music) if music else None, "clips": len(manifest),
-                      "credits": credits}}
+                      "credits": credits, "hook_title": title, "series": series}}
 
 
 def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,

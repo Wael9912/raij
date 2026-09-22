@@ -18,7 +18,7 @@ from pathlib import Path
 import httpx
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
-from src.assemble.subtitles import Renderer
+from src.assemble import brand
 from src.config import Config
 from src.discover.common import FetchError, request
 
@@ -89,17 +89,16 @@ def download(cfg: Config, client: httpx.Client, photo: Photo) -> Photo:
     return photo
 
 
-def compose(src: Path, credit: str, out: Path, renderer: Renderer | None = None) -> Path:
+def compose(src: Path, credit: str, out: Path) -> Path:
     """1080×1920 frame: the photo, uncropped, over a blurred darkened fill of itself, with the credit
     in small type near the top (clear of the subtitle band)."""
-    r = renderer or Renderer()
     img = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
     bg = ImageOps.fit(img, (W, H)).filter(ImageFilter.GaussianBlur(40))
     bg = ImageEnhance.Brightness(bg).enhance(0.55)
     fg = ImageOps.contain(img, (980, 1150))
     bg.paste(fg, ((W - fg.width) // 2, 140 + (1150 - fg.height) // 2))
     d = ImageDraw.Draw(bg)
-    font = r.lat.font_variant(size=26)
+    font = brand.font(26, weight=700)
     text = credit if font.getlength(credit) <= W - 60 else credit[:90] + "…"
     d.text((W / 2, 100), text, font=font, fill=(235, 235, 235), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0))
     out.parent.mkdir(parents=True, exist_ok=True)

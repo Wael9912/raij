@@ -5,7 +5,7 @@ import argparse
 import logging
 import sys
 
-from src import db
+from src import db, textshape
 from src.config import load_config
 
 log = logging.getLogger("raij")
@@ -159,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    textshape.ensure()                      # Arabic shaping (raqm) for rendered text
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

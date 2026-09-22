@@ -27,6 +27,7 @@ _PERSON_WORD = re.compile(
     r"executive|manager|coach|player|athlete|actor|actress|celebrity|star|official|president|leader|judge|"
     r"doctor|nurse|patient|fan|fans|friend|friends|family|couple|child|children|kid|kids|elderly|senior|"
     r"portrait|face|faces|selfie|smiling|user|worker|student|teacher|customer|audience)\b", re.I)
+_ARABIC = re.compile(r"[\u0600-\u06FF]")
 # Weaker models sometimes emit stray CJK/Hangul/kana inside Arabic words (e.g. "مانニング").
 _STRAY = re.compile(r"[^\s\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFFA-Za-z0-9"
                     r".,:;!?%'\"()\[\]«»\-–—/…“”‘’#&+]")
@@ -45,6 +46,8 @@ class Draft:
     beats: list[dict[str, Any]]
     description_en: str
     hashtags: list[str]
+    hook_title: str | None = None         # on-screen headline (assemble); None → video has no title card
+    series: str | None = None             # model's series pick; assemble keeps it only if it's a brand series
 
     @property
     def body_ar(self) -> str:
@@ -96,7 +99,8 @@ def validate(data: Any, min_words: int, max_words: int) -> Draft:
         raise DraftError(f"beats out of order: {roles}")
     tags = [t if t.startswith("#") else f"#{t}" for t in (str(t).strip().replace(" ", "_")
                                                            for t in data.get("hashtags") or []) if t.strip("#")]
-    draft = Draft(beats, str(data.get("description_en") or "").strip(), tags[:8])
+    draft = Draft(beats, str(data.get("description_en") or "").strip(), tags[:8],
+                  clean_title(data.get("hook_title")), str(data.get("series") or "").strip() or None)
     if draft.words < min_words:
         raise DraftError(f"script is {draft.words} words — too short; add about "
                          f"{min_words + 10 - draft.words} words", draft)
@@ -104,6 +108,15 @@ def validate(data: Any, min_words: int, max_words: int) -> Draft:
         raise DraftError(f"script is {draft.words} words — too long; cut about "
                          f"{draft.words - max_words + 10} words", draft)
     return draft
+
+
+def clean_title(value: Any, max_words: int = 6) -> str | None:
+    """A usable on-screen hook title, or None. A bad title never fails the draft (it costs a retry of
+    the whole script); the video just goes without one."""
+    title = re.sub(r"\s+", " ", str(value or "")).strip().strip(".،")
+    if not title or _STRAY.search(title) or not _ARABIC.search(title) or not 1 <= len(title.split()) <= max_words:
+        return None
+    return title
 
 
 def _bullets(items: list[str]) -> str:
@@ -123,6 +136,7 @@ def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extr
         # Aim inside the accepted range: models tend to undershoot word counts.
         target_min=str(cfg.get("script.min_words", 85) + 10),
         target_max=str(cfg.get("script.max_words", 115) - 10),
+        series=" / ".join(f'"{v}"' for v in (brand.get("series") or {}).values()) or "(none — omit it)",
         extra=f"\n{extra.strip()}\n" if extra.strip() else "",
     )
 
@@ -148,8 +162,10 @@ def draft(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str 
 
 
 def _row(d: Draft, sim: float | None, status: str, version: int, notes: dict[str, Any]) -> dict[str, Any]:
+    look = {k: v for k, v in (("hook_title", d.hook_title), ("series", d.series)) if v}
     return {"version": version, "body_ar": d.body_ar, "beats": d.beats, "description_en": d.description_en,
-            "hashtags": d.hashtags, "similarity": sim, "status": status, "notes": {"words": d.words, **notes}}
+            "hashtags": d.hashtags, "similarity": sim, "status": status,
+            "notes": {"words": d.words, **look, **notes}}
 
 
 def _rejected(exc: DraftError, version: int) -> dict[str, Any]:

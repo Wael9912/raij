@@ -23,7 +23,7 @@ import httpx
 
 from src import db
 from src.assemble import render
-from src.assemble.runner import assemble_video
+from src.assemble.runner import VIDEO_SELECT, assemble_video
 from src.config import Config
 from src.discover.common import make_client
 from src.review import cards
@@ -202,8 +202,7 @@ class Handler:
                      (voice_path, duration, json.dumps(notes, ensure_ascii=False), new_id))
         conn.commit()
 
-        video = dict(conn.execute("SELECT v.*, x.beats, x.brand_id FROM videos v JOIN scripts x ON x.id = v.script_id "
-                                  "WHERE v.id = ?", (new_id,)).fetchone())
+        video = dict(conn.execute(f"{VIDEO_SELECT} WHERE v.id = ?", (new_id,)).fetchone())
         exclude = set()
         if new_broll:
             exclude = {f"{m['provider']}:{m['id']}" for m in json.loads(ctx.get("broll_manifest") or "[]")

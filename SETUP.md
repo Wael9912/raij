@@ -8,7 +8,8 @@ Consoles change their menus often. If a button name here doesn't match what you 
 ## 0. Local prerequisites
 
 ```bash
-brew install uv ffmpeg            # uv = Python manager; plain ffmpeg is enough (subs are drawn in Python)
+brew install uv ffmpeg libraqm    # uv = Python manager; plain ffmpeg is enough (subs are drawn in Python);
+                                  # libraqm = HarfBuzz Arabic shaping for Pillow
 cd ~/Documents/Projects/social-media-automation
 uv sync                           # creates .venv with Python 3.12 + deps
 cp .env.example .env
@@ -106,10 +107,11 @@ uv run python -m src.main --help
 ffmpeg -version | head -1
 ffmpeg -hide_banner -encoders | grep libx264      # H.264 encoder must be present
 ```
-- libass is **not** needed: Arabic subtitles are shaped and drawn in Python (Pillow + arabic-reshaper +
-  python-bidi) and overlaid by ffmpeg, so the slim Homebrew `ffmpeg` works.
-- Fonts are bundled in `assets/fonts/` (Noto Naskh Arabic Bold + Noto Sans Bold for Latin words, OFL —
-  see `assets/fonts/OFL.txt`). Nothing to install.
+- libass is **not** needed: Arabic subtitles and brand graphics are drawn in Python (Pillow with raqm/HarfBuzz
+  shaping — needs `brew install libraqm`; `src/textshape.py` makes Pillow find Homebrew's fribidi) and
+  overlaid by ffmpeg, so the slim Homebrew `ffmpeg` works. Check: `uv run pytest -q -k shaping`.
+- Channel font Cairo (variable, used at Black) is bundled in `assets/fonts/` (OFL — `OFL-Cairo.txt`).
+  Optional: drop your own logo at `assets/brand/logo.png` (transparent PNG); otherwise a "رائج" wordmark is drawn.
 - Optional background music: drop CC0 tracks (mp3/m4a/wav) into `assets/music/`; they're ducked under the
   voice automatically. With none, videos are voice-only.
 

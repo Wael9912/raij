@@ -1,13 +1,12 @@
 """Burned-in Arabic subtitles, rendered as transparent PNGs with Pillow.
 
-The local ffmpeg has no libass/drawtext, and Pillow's wheel has no raqm, so Arabic is shaped in
-pure Python (arabic-reshaper for joining forms, python-bidi for digits inside a word) and laid out
-word by word right-to-left; runs of Latin/number words keep left-to-right order. Latin letters
-use a fallback font because Noto Naskh has none.
+The local ffmpeg has no libass/drawtext, so subtitles are drawn in Python. Arabic is shaped by
+HarfBuzz (Pillow raqm, see src/textshape.py) in the channel font (brand.font) and laid out word by
+word right-to-left; runs of Latin/number words keep left-to-right order.
 
 Words come from the voice timings (Phase 5), so text and timing always agree. Each cue is up to
-two lines; the word being spoken is highlighted. The PNG sequence plays through ffmpeg's concat
-demuxer as one overlay stream.
+two lines; the word being spoken sits on a yellow pill. The PNG sequence plays through ffmpeg's
+concat demuxer as one overlay stream.
 """
 from __future__ import annotations
 
@@ -16,18 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import arabic_reshaper
-from bidi import get_display
 from PIL import Image, ImageDraw, ImageFont
 
-from src.config import ROOT
-
-FONTS = ROOT / "assets" / "fonts"
-ARABIC_FONT = FONTS / "NotoNaskhArabic-Bold.ttf"
-LATIN_FONT = FONTS / "NotoSans-Bold.ttf"
+from src.assemble import brand
 
 _ARABIC = re.compile(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")
-_LATIN = re.compile(r"[A-Za-z]")
 _QUOTES = str.maketrans({"«": '"', "»": '"', "“": '"', "”": '"'})
 
 
@@ -37,11 +29,12 @@ class Style:
     band_height: int = 380             # PNG band; placed at `top` on the 1080×1920 frame
     top: int = 1250                    # clear of Reels/Shorts bottom UI (~last 300 px)
     max_line_px: int = 940
-    size: int = 84
-    line_gap: int = 18
-    stroke: int = 6
+    size: int = 92
+    line_gap: int = 34
+    stroke: int = 7
     fill: tuple = (255, 255, 255, 255)
-    highlight: tuple = (255, 212, 0, 255)
+    highlight: tuple = (255, 212, 0, 255)      # pill behind the spoken word
+    highlight_text: tuple = (18, 22, 34, 255)
     stroke_fill: tuple = (0, 0, 0, 255)
 
 
@@ -55,24 +48,24 @@ class Cue:
 class Renderer:
     def __init__(self, style: Style | None = None):
         self.style = style or Style()
-        self.ar = ImageFont.truetype(str(ARABIC_FONT), self.style.size)
-        self.lat = ImageFont.truetype(str(LATIN_FONT), int(self.style.size * 0.9))
-        self.space = self.ar.getlength(" ")
+        self.ar = brand.font(self.style.size)
+        self.space = max(self.ar.getlength(" "), self.style.size * 0.27)   # room for the highlight pill
 
     # -- words ---------------------------------------------------------------
     @staticmethod
     def is_ltr(word: str) -> bool:
         return not _ARABIC.search(word)
 
-    def glyphs(self, word: str) -> str:
-        word = word.translate(_QUOTES)
-        return word if self.is_ltr(word) else get_display(arabic_reshaper.reshape(word))
+    @staticmethod
+    def glyphs(word: str) -> str:
+        return word.translate(_QUOTES)
 
     def font(self, word: str) -> ImageFont.FreeTypeFont:
-        return self.lat if _LATIN.search(word) and self.is_ltr(word) else self.ar
+        return self.ar
 
     def width(self, word: str) -> float:
-        return self.font(word).getlength(self.glyphs(word)) + 2 * self.style.stroke
+        w = self.glyphs(word)
+        return self.ar.getlength(w, **brand.text_kw(w)) + 2 * self.style.stroke
 
     # -- layout --------------------------------------------------------------
     def line_px(self, words: list[str], line: list[int]) -> float:
@@ -120,11 +113,19 @@ class Renderer:
             order = self.visual_order(words, line)
             total = self.line_px(words, order)
             x = (s.width - total) / 2
+            base = y + s.size * 0.8
             for i in order:
-                d.text((x + s.stroke, y + s.size * 0.8), self.glyphs(words[i]), font=self.font(words[i]),
-                       fill=s.highlight if i == active else s.fill, anchor="ls",
-                       stroke_width=s.stroke, stroke_fill=s.stroke_fill)
-                x += self.width(words[i]) + self.space
+                w, wd = self.glyphs(words[i]), self.width(words[i])
+                kw = brand.text_kw(w)
+                if i == active:
+                    pad = s.size * 0.16
+                    d.rounded_rectangle((x - pad + s.stroke / 2, base - s.size * 0.98, x + wd + pad - s.stroke / 2,
+                                         base + s.size * 0.36), radius=int(s.size * 0.24), fill=s.highlight)
+                    d.text((x + s.stroke, base), w, font=self.ar, fill=s.highlight_text, anchor="ls", **kw)
+                else:
+                    d.text((x + s.stroke, base), w, font=self.ar, fill=s.fill, anchor="ls",
+                           stroke_width=s.stroke, stroke_fill=s.stroke_fill, **kw)
+                x += wd + self.space
             y += line_h
         return img
 
@@ -152,8 +153,9 @@ def make_cues(words: list[dict[str, Any]], beats: list[dict[str, Any]], renderer
 
 
 def render_sequence(words: list[dict[str, Any]], beats: list[dict[str, Any]], out_dir: Path,
-                    total: float, renderer: Renderer | None = None) -> Path:
-    """Write subtitle PNGs + an ffmpeg concat list covering [0, total]; returns the list path."""
+                    total: float, renderer: Renderer | None = None, hide_until: float = 0.0) -> Path:
+    """Write subtitle PNGs + an ffmpeg concat list covering [0, total]; returns the list path.
+    Nothing shows before `hide_until` (the on-screen hook title has the screen then)."""
     renderer = renderer or Renderer()
     out_dir.mkdir(parents=True, exist_ok=True)
     texts = [w["text"] for w in words]
@@ -163,11 +165,14 @@ def render_sequence(words: list[dict[str, Any]], beats: list[dict[str, Any]], ou
     entries: list[tuple[Path, float]] = []
     t = 0.0
     for c, cue in enumerate(make_cues(words, beats, renderer)):
-        if cue.start > t:
-            entries.append((blank, cue.start - t))
+        if cue.end <= hide_until:
+            continue
+        shown_from = max(cue.start, hide_until)
+        if shown_from > t:
+            entries.append((blank, shown_from - t))
         idx = [i for line in cue.lines for i in line]
         for k, i in enumerate(idx):
-            start = max(words[i]["start"], cue.start) if k else cue.start
+            start = max(words[i]["start"] if k else cue.start, shown_from)
             end = words[idx[k + 1]]["start"] if k + 1 < len(idx) else cue.end
             if end <= start:
                 continue

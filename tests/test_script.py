@@ -230,3 +230,52 @@ def test_faceless_keywords_and_person_field():
     beats[1] = {**beats[1], "broll_keywords": ["smiling woman portrait"]}
     with pytest.raises(write.DraftError, match="no people"):
         write.validate({**_draft(), "beats": beats}, 85, 115)
+
+
+# --- on-screen hook title ----------------------------------------------------
+
+@pytest.mark.parametrize("raw, want", [
+    ("مزاد لا يصدق!", "مزاد لا يصدق!"), ("  نهاية   عصر إنفانتينو؟ ", "نهاية عصر إنفانتينو؟"),
+    ("كلمة " * 7, None), ("Big news", None), ("", None), (None, None), ("خبر مانニング", None),
+])
+def test_hook_title_is_short_clean_arabic(raw, want):
+    assert write.clean_title(raw) == want
+
+
+def test_bad_hook_title_never_fails_the_draft():
+    d = write.validate({**_draft(), "hook_title": "كلمة " * 9, "series": "هل تعلم؟"}, 85, 115)
+    assert d.hook_title is None and d.series == "هل تعلم؟"
+
+
+def test_hook_title_and_series_saved_in_notes(env, monkeypatch):
+    cfg, conn, tmp = env
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    _story(conn)
+    prompts = []
+    reply = {**_draft(), "hook_title": "الفيفا على المحك", "series": "رياضة في دقيقة"}
+    assert runner.script(cfg, conn, client=_llm([reply], prompts), out_dir=tmp) == 0
+    notes = json.loads(conn.execute("SELECT notes FROM scripts").fetchone()[0])
+    assert notes["hook_title"] == "الفيفا على المحك" and notes["series"] == "رياضة في دقيقة"
+    assert '"هل تعلم؟"' in prompts[0] and "hook_title" in prompts[0]
+
+
+def test_backfill_titles_for_old_scripts(env, monkeypatch):
+    from src.script import titles
+    cfg, conn, _ = env
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    _story(conn)
+    for status in ("passed", "passed", "superseded"):
+        conn.execute("INSERT INTO scripts (story_id, brand_id, body_ar, status, notes) VALUES (1, 'raij', 'نص', ?, '{\"words\": 99}')",
+                     (status,))
+    conn.execute("INSERT INTO videos (script_id, status) VALUES (1, 'approved'), (2, 'rejected'), (3, 'approved')")
+    conn.commit()
+    assert [s["id"] for s in titles.missing(conn)] == [1]              # rejected video / superseded script skipped
+    prompts = []
+    reply = {"titles": [{"id": 1, "hook_title": "عنوان جديد", "series": "حكايات"}, {"id": 2, "hook_title": "x"}]}
+    assert titles.backfill(cfg, conn, client=_llm([reply], prompts)) == 1
+    notes = json.loads(conn.execute("SELECT notes FROM scripts WHERE id = 1").fetchone()[0])
+    assert notes == {"words": 99, "hook_title": "عنوان جديد", "series": "حكايات"} and "[id 1]" in prompts[0]
+    assert titles.missing(conn) == [] and titles.backfill(cfg, conn, client=_llm([], [])) == 0   # idempotent
+    down = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    conn.execute("UPDATE scripts SET notes = '{}' WHERE id = 1")
+    assert titles.backfill(cfg, conn, client=down) == 0                # outage: nothing written, no crash

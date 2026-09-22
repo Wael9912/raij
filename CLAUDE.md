@@ -16,14 +16,15 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 5 Voice | ✅ done | `5aba7c1` | live: 5/5 voiced, 44–53s at +10%, −14.2 LUFS / −1.5 dBTP; Gemini transcription of a clip matched the script word for word |
 | 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9`, `cf0b0b3` | live with Pexels: 5/5 rendered, 45–54s, 7–10 clips, 18–37 MB; faceless b-roll + licensed Commons photos of public figures |
 | 7 Telegram review | ✅ done | `d27ce54`, `47b385c` | live with @Raig88_bot: approve/reject/edit/new b-roll all used by the owner; #13 #17 #19 approved, #14 #16 rejected. Late-tap bug found live + fixed |
-| 6.5 Visual polish | ⏭ **next** | | owner feedback 2026-09-22 — see "Next up" below. Do this before Phase 8 |
-| 8 Publish | ⬜ | | see plan below |
+| 6.5 Visual polish | ✅ done | (this commit) | Cairo Black via raqm, xfade transitions, hook title + series badge, logo, progress bar. #13/#17/#19 re-rendered as #20/#21/#22 → **awaiting owner re-approval** |
+| 8 Publish | ⏭ **next** | | see plan below |
 | 9 Analytics + runner | ⬜ | | |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
 Missing: YouTube, Reddit, Groq, Pixabay, Meta, YouTube OAuth. The review `bot` is NOT a service yet (Phase 9):
 start it with `uv run python -m src.main bot` whenever reviews are pending — taps queue until it runs.
 Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** — subtitles are drawn in Python instead.
+`libraqm` is installed via Homebrew (Arabic shaping for Pillow, see `src/textshape.py`).
 
 ## Commands
 
@@ -81,14 +82,30 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   back as ONE timing token — subtitle code must not assume one token per whitespace word. Output
   `assets/generated/voice/<script_id>.wav` + `.words.json` (`words[{text,start,end}]`, `beats[{role,start,end}]`);
   `videos.voice_path` is repo-relative. >58s → one re-synthesis at a computed faster rate (≤ +25%), else `failed`.
-- Assemble: **no libass** — subtitles are PNGs from Pillow with pure-Python shaping (arabic-reshaper +
-  python-bidi; Pillow's wheel lacks raqm), per-word RTL layout with LTR runs for Latin/digits, Noto Naskh Arabic
-  Bold + Noto Sans Bold fallback (bundled, OFL). One PNG per spoken word (highlight), played via the concat
-  demuxer as a single overlay. Cues ≤2 balanced lines, ≤7 words, never across a beat or a >0.6s pause.
-  Subtitle band top y=1250 (clear of platform UI). B-roll: Pexels→Pixabay, portrait first, ≤2 clips/beat,
+- Assemble: **no libass** — subtitles are PNGs from Pillow, shaped by **HarfBuzz (raqm)**: Pillow's wheel bundles raqm
+  but dlopens `libfribidi.dylib` by bare name, which dyld doesn't find in /opt/homebrew/lib, so
+  `textshape.ensure()` imports `PIL._imagingft` once from a temp cwd holding a symlink (dyld searches cwd for leaf
+  names; DYLD_* env re-exec broke pytest's fd capture). Must run before any `PIL.ImageFont` import — `brand.py`,
+  `main()` and `tests/conftest.py` call it. arabic-reshaper/python-bidi removed (presentation forms lacked glyphs
+  in Cairo/Tajawal/Almarai). Per-word RTL layout with LTR runs for Latin/digits. One PNG per spoken word, played
+  via the concat demuxer as a single overlay. Cues ≤2 balanced lines, ≤7 words, never across a beat or a >0.6s
+  pause. Subtitle band top y=1250 (clear of platform UI). B-roll: Pexels→Pixabay, portrait first, ≤2 clips/beat,
   `-stream_loop` so short clips loop. Guardrail = `render.guard()` against `config.ALLOWED_MEDIA_SUBDIRS`
   (stock, generated, music), symlinks resolved. Output `assets/generated/video/<video_id>.mp4` + `.srt`.
-  Real videos are 27–46 MB (more cuts → more bitrate); Telegram bots can only send ≤50 MB → preview copy in Phase 7.
+  Real videos are 23–38 MB; Telegram bots can only send ≤50 MB → preview copy in Phase 7.
+- **Look (Phase 6.5, owner-picked):** font **Cairo Black** (variable font at wght 900, `assets/fonts/Cairo-Variable.ttf`)
+  for everything (`brand.font`); subtitles 92px, stroke 7, spoken word on a **yellow pill** (#FFD400, dark text).
+  Cuts are an `xfade` chain (0.3s, `video.transition_seconds`, types cycle through `render.TRANSITIONS`, fade into
+  the end card): every segment is trimmed `seconds + d`, xfade k's offset = sum of the first k segments' nominal
+  lengths, so cut times and total length are unchanged. **Hook title**: `scripts.notes.hook_title` (≤6 Arabic words,
+  from `script_write.txt`; `write.clean_title` drops a bad one rather than failing the draft), pops in (6-frame
+  scale/alpha) with the **series badge** above it, center y≈820, for `video.hook_title_seconds` (2.5s); subtitles
+  stay hidden until it's gone. Title shrinks from 118px until it fits 2 lines (a 3rd line was silently dropped at
+  first — caught on the contact sheet). Series = script's pick if it's in `brands[].series`, else by category.
+  `script/titles.py` backfills titles for older passed scripts with live videos (one batched LLM call, run at the
+  end of the `script` stage). **Logo**: `assets/brand/logo.png` if present, else a drawn "رائج" wordmark pill, 75%
+  opacity at (48,150), hidden on the end card. Thin yellow **progress bar** at y=0. End card: wordmark + series
+  badge + "تابعنا للمزيد".
 - B-roll selection: one clip per ~7s of a beat (≤4), clips >60s skipped, shortest-that-fits first, clips used in
   the last 7 days sort last; cache pruned to clips used in the last 14 days (~6 MB/clip).
 - **Faceless b-roll + real photos (owner's decision):** stock strangers read as the story's real person. Keywords
@@ -112,37 +129,12 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   New b-roll: same voice, `assemble_video(exclude=old stock ids)`. Re-voice: toggles brand `voice.alt`/`name`.
   Regeneration failure → message + original's buttons restored.
 
-## Next up — Phase 6.5 Visual polish (owner feedback, 2026-09-22)
+## Next up
 
-The owner watched the first videos in Telegram. Four requests, all in `src/assemble/`:
-
-1. **Arabic subtitle font looks bad → use a font trending on Arabic Reels/TikTok.** Bold, rounded, modern sans —
-   candidates (all OFL on Google Fonts): **Cairo Black/ExtraBold**, **Tajawal ExtraBold/Black**, **Almarai
-   ExtraBold**, **Lalezar** (display), **IBM Plex Sans Arabic Bold**. Render 2–3 side by side on real frames
-   and pick with the owner (send a comparison image to Telegram or show it in chat).
-   ⚠️ Shaping caveat: subtitles use arabic-reshaper → *presentation-form* codepoints (U+FB50–FEFF). Many modern
-   fonts (Cairo, Tajawal…) lack those glyphs → boxes. Either verify the font has them (fontTools cmap check), or
-   switch to real HarfBuzz shaping: `brew install libraqm` (small) — Pillow's wheel dlopens it; then
-   `ImageFont.Layout.RAQM` with `direction="rtl"` renders logical text directly (drop reshaper/bidi). Prefer
-   raqm if the owner OKs the install. Also style: bigger (≈90–100px), thicker stroke or a soft rounded box,
-   keep word highlight (maybe highlight = colored pill behind the active word).
-2. **No transitions between clips → add them.** Replace the plain `concat` with an `xfade` chain (0.25–0.4s;
-   `fade`/`smoothleft`/`slideup`/`zoomin`, varied per cut) — offsets = cumulative segment lengths minus overlap,
-   so extend each segment by the overlap to keep beat timing and total length. Photo stills: slow zoom already.
-3. **No visual hook → add an on-screen hook title in the first ~2.5s.** Big 2-line headline (≤6 words), center
-   screen, animated in (scale/pop via overlay with `enable`), then subtitles take over. Source: add
-   `"hook_title"` (≤6 Arabic words, punchier than the spoken hook) to `script_write.txt` + `write.validate`.
-   Consider a thin progress bar at the top as retention bait.
-4. **No logo → channel logo + series name.** Persistent small channel logo/wordmark "رائج" (top corner, ~70%
-   opacity) through the video, plus a **series badge** — e.g. "هل تعلم؟" (did you know), "اكتشاف" (discovery),
-   "عالم التقنية", "رياضة في دقيقة", "حكايات" — shown with the hook title and on the end card. Map series from
-   category in config (`brands[].series: {wow-facts: "هل تعلم؟", tech: "عالم التقنية", sports: …,
-   culture: "حكايات", news-lite: "رائج اليوم", life-hack: "حيلة اليوم"}`); let the script LLM override with a
-   `series` field if a better fit. Logo: use `assets/brand/logo.png` if the owner supplies one, else generate
-   a clean wordmark PNG (Pillow) in brand colors (yellow #FFD400 on dark). Ask the owner for series names/colors.
-
-Re-render the approved videos (#13, #17, #19) with the polish and send them to Telegram for a fresh look —
-don't touch their approvals until the owner re-approves (new video rows via the normal regeneration path).
+1. Owner re-reviews **#20 #21 #22** (polished re-renders of approved #13 #17 #19, which are now `superseded`; their
+   old approval rows stay but Phase 8 only publishes a video with an approval row for *that exact id*).
+   Apply any look feedback in `src/assemble/brand.py` / `subtitles.Style` / `config.yaml` `video:`.
+2. Phase 8 Publish (below) — blocked on Meta + YouTube OAuth keys.
 
 ## Plan — Phase 8 (Publish)
 

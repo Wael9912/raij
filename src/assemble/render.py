@@ -1,5 +1,6 @@
-"""Render the final 1080×1920 video with ffmpeg: b-roll segments → subtitle overlay → end card,
-voice plus optional CC0 music ducked under it.
+"""Render the final 1080×1920 video with ffmpeg: b-roll segments joined by xfade transitions → end card,
+then overlays (subtitles, animated hook title, channel logo, progress bar); voice plus optional CC0
+music ducked under it.
 
 Guardrail: every media input is resolved (symlinks followed) and must sit inside
 config.ALLOWED_MEDIA_SUBDIRS under the repo root — licensed stock, our generated assets, CC0
@@ -12,14 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from PIL import Image, ImageDraw
-
-from src.assemble.subtitles import Renderer
 from src.config import ALLOWED_MEDIA_SUBDIRS, Config
 
 RunCmd = Callable[[list[str]], subprocess.CompletedProcess]
 W, H, FPS = 1080, 1920, 30
 STILL_EXT = {".jpg", ".jpeg", ".png"}
+# Varied per cut, in order; the cut into the end card is always a plain fade.
+LOGO_XY = (48, 150)                       # top-left, below the platforms' top bar
+TRANSITIONS = ("smoothleft", "fade", "slideup", "zoomin", "smoothright", "circleopen", "slidedown", "fadeblack")
 
 
 class GuardrailError(RuntimeError):
@@ -59,25 +60,15 @@ class Plan:
     endcard_seconds: float
     out: Path
     music: Path | None = None
+    hook_list: Path | None = None         # ffconcat list of the animated hook title (full-frame PNGs)
+    logo: Path | None = None              # full-frame PNG with the channel logo, hidden on the end card
+    transition: float = 0.3               # seconds of overlap per cut; 0 = hard cuts
+    progress_bar: bool = True
     extra: dict = field(default_factory=dict)
 
     @property
     def total(self) -> float:
         return round(sum(s.seconds for s in self.segments) + self.endcard_seconds, 3)
-
-
-def endcard(brand: dict, out: Path, renderer: Renderer | None = None) -> Path:
-    """Placeholder brand card: channel name + follow prompt on a dark background."""
-    r = renderer or Renderer()
-    img = Image.new("RGB", (W, H), (18, 22, 34))
-    d = ImageDraw.Draw(img)
-    name = r.glyphs(brand.get("name") or brand["id"])
-    big = r.ar.font_variant(size=220)
-    d.text((W / 2, H * 0.42), name, font=big, fill=(255, 212, 0), anchor="mm")
-    d.text((W / 2, H * 0.56), r.glyphs("تابعنا للمزيد"), font=r.ar.font_variant(size=90),
-           fill=(255, 255, 255), anchor="mm")
-    img.save(out)
-    return out
 
 
 def segments_for(beats: list[dict], clips_per_beat: list[list[Path]], voice_seconds: float) -> list[Segment]:
@@ -99,31 +90,61 @@ def command(cfg: Config, plan: Plan) -> list[str]:
     filters: list[str] = []
     labels: list[str] = []
     n = 0
+    d = plan.transition if len(plan.segments) and plan.transition > 0 else 0.0
     for seg in plan.segments:
+        # Each segment runs `d` longer: the next one fades in over that tail, so cuts stay on the beat.
+        dur = round(seg.seconds + d, 3)
         if seg.still:
-            inputs += ["-loop", "1", "-framerate", str(FPS), "-t", str(seg.seconds), "-i", str(guard(cfg, seg.clip))]
+            inputs += ["-loop", "1", "-framerate", str(FPS), "-t", str(dur), "-i", str(guard(cfg, seg.clip))]
             filters.append(f"[{n}:v]scale={W}:{H},zoompan=z='min(1+0.0008*on,1.06)':x='iw/2-(iw/zoom/2)':"
-                           f"y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps={FPS},trim=duration={seg.seconds},"
-                           f"setpts=PTS-STARTPTS,setsar=1,format=yuv420p[v{n}]")
+                           f"y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps={FPS},trim=duration={dur},"
+                           f"setpts=PTS-STARTPTS,settb=AVTB,setsar=1,format=yuv420p[v{n}]")
         else:
             inputs += ["-stream_loop", "-1", "-i", str(guard(cfg, seg.clip))]
-            filters.append(f"[{n}:v]trim=duration={seg.seconds},setpts=PTS-STARTPTS,fps={FPS},"
+            filters.append(f"[{n}:v]trim=duration={dur},setpts=PTS-STARTPTS,fps={FPS},"
                            f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,"
-                           f"format=yuv420p[v{n}]")
+                           f"settb=AVTB,format=yuv420p[v{n}]")
         labels.append(f"[v{n}]")
         n += 1
     inputs += ["-loop", "1", "-t", str(plan.endcard_seconds), "-i", str(guard(cfg, plan.endcard))]
     filters.append(f"[{n}:v]fps={FPS},scale={W}:{H},setsar=1,format=yuv420p,"
-                   f"trim=duration={plan.endcard_seconds}[v{n}]")
+                   f"trim=duration={plan.endcard_seconds},setpts=PTS-STARTPTS,settb=AVTB[v{n}]")
     labels.append(f"[v{n}]")
     n += 1
-    filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[bg]")
+    if d:
+        acc, offset = labels[0], 0.0
+        for k, (seg, nxt) in enumerate(zip(plan.segments, labels[1:]), 1):
+            offset += seg.seconds
+            kind = "fade" if k == len(plan.segments) else TRANSITIONS[(k - 1) % len(TRANSITIONS)]
+            out = "[bg]" if k == len(plan.segments) else f"[x{k}]"
+            filters.append(f"{acc}{nxt}xfade=transition={kind}:duration={d}:offset={offset:.3f}{out}")
+            acc = out
+    else:
+        filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[bg]")
 
     guard(cfg, plan.subs_list.parent)
     inputs += ["-f", "concat", "-safe", "0", "-i", str(plan.subs_list)]
     filters.append(f"[{n}:v]format=rgba[subs]")
-    filters.append(f"[bg][subs]overlay=0:{plan.subs_top}:eof_action=pass,format=yuv420p[vout]")
+    filters.append(f"[bg][subs]overlay=0:{plan.subs_top}:eof_action=pass[o0]")
     n += 1
+    top = "[o0]"
+    body_end = round(plan.total - plan.endcard_seconds, 3)
+    if plan.hook_list:
+        guard(cfg, plan.hook_list.parent)
+        inputs += ["-f", "concat", "-safe", "0", "-i", str(plan.hook_list)]
+        filters.append(f"[{n}:v]format=rgba[hook]")
+        filters.append(f"{top}[hook]overlay=0:0:eof_action=pass[o1]")
+        n, top = n + 1, "[o1]"
+    if plan.logo:
+        inputs += ["-loop", "1", "-framerate", str(FPS), "-t", str(plan.total), "-i", str(guard(cfg, plan.logo))]
+        filters.append(f"[{n}:v]format=rgba[logo]")
+        filters.append(f"{top}[logo]overlay={LOGO_XY[0]}:{LOGO_XY[1]}:enable='lt(t,{body_end})'[o2]")
+        n, top = n + 1, "[o2]"
+    if plan.progress_bar:
+        filters.append(f"color=c=0xFFD400:s={W}x10:r={FPS}:d={plan.total}[bar]")
+        filters.append(f"{top}[bar]overlay=x='-w+w*t/{body_end}':y=0:enable='lt(t,{body_end})'[o3]")
+        top = "[o3]"
+    filters.append(f"{top}format=yuv420p[vout]")
 
     inputs += ["-i", str(guard(cfg, plan.voice))]
     voice_idx = n

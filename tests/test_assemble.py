@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from src import db
-from src.assemble import broll, render, runner, subtitles
+from src.assemble import brand, broll, render, runner, subtitles
 from src.config import load_config
 from src.discover.common import Candidate, upsert_candidates
 
@@ -74,8 +74,8 @@ def test_visual_order_keeps_ltr_runs_left_to_right():
 
 def test_wrap_balances_two_lines():
     r = subtitles.Renderer()
-    words = ["كلمة"] * 9
-    lines = r.wrap(words, list(range(9)))
+    words = ["كلمة"] * 6
+    lines = r.wrap(words, list(range(6)))
     assert len(lines) == 2 and abs(len(lines[0]) - len(lines[1])) <= 1
 
 
@@ -91,6 +91,45 @@ def test_render_sequence_covers_whole_video(tmp_path):
     assert abs(sum(durations) - 4.6) < 0.01
     assert body.splitlines()[-1] == "file 'blank.png'"
     assert len(list(tmp_path.glob("c*.png"))) == 4                    # one frame per highlighted word
+
+
+def test_subtitles_wait_for_hook_title(tmp_path):
+    lst = subtitles.render_sequence(WORDS, SPANS, tmp_path, total=4.6, hide_until=0.6)
+    lines = lst.read_text().splitlines()
+    assert lines[1:3] == ["file 'blank.png'", "duration 0.600"]          # blank while the title shows
+    durations = [float(line.split()[1]) for line in lines if line.startswith("duration")]
+    assert abs(sum(durations) - 4.6) < 0.01
+    assert len(list(tmp_path.glob("c*.png"))) == 3                    # "هل" (0.1–0.4) is never shown
+
+
+def test_arabic_needs_real_shaping():
+    from src import textshape
+    assert textshape.available(), "raqm missing — brew install libraqm"
+    r = subtitles.Renderer()
+    assert r.glyphs("«كلمة»") == '"كلمة"'                              # logical text; HarfBuzz shapes it
+
+
+def test_series_badge_by_category_or_script_pick():
+    look = {"series": {"tech": "عالم التقنية", "wow-facts": "هل تعلم؟"}}
+    assert brand.series_name(look, "tech") == "عالم التقنية"
+    assert brand.series_name(look, "tech", "هل تعلم؟") == "هل تعلم؟"
+    assert brand.series_name(look, "tech", "made up") == "عالم التقنية"
+    assert brand.series_name(look, "sports") is None and brand.series_name({}, "tech") is None
+
+
+def test_long_hook_title_shrinks_instead_of_losing_words():
+    title = "ضغوط دولية تلاحق رئيس الفيفا"
+    assert len(brand.wrap(title, 118, 960)) == 3 and " ".join(brand.wrap(title, 118, 960)) == title
+    assert brand._title_block(title, None).width <= 1000
+
+
+def test_hook_sequence_lasts_its_seconds(tmp_path):
+    lst = brand.hook_sequence("هل يواجه رئيس الفيفا النهاية؟", "رياضة في دقيقة", tmp_path, 2.5)
+    lines = lst.read_text().splitlines()
+    durations = [float(line.split()[1]) for line in lines if line.startswith("duration")]
+    assert abs(sum(durations) - 2.5 - 1 / 30) < 0.01 and lines[-1] == "file 'hook_blank.png'"
+    from PIL import Image
+    assert Image.open(tmp_path / "hook_hold.png").size == (1080, 1920)
 
 
 def test_srt():
@@ -192,10 +231,25 @@ def test_assemble_end_to_end(env, monkeypatch):
     assert row["duration_s"] == 4.6                                    # 2.6s voice + 2s end card
     cmd = " ".join(ff.cmds[0])
     assert "sidechaincompress" in cmd and "pexels_101.mp4" in cmd and "subs.txt" in cmd
+    assert "logo.png" in cmd and "xfade" in cmd and "hook.txt" not in cmd        # no hook title on this script
     assert not (tmp / "assets/generated/video/1").exists()             # subtitle PNGs cleaned up
 
     assert runner.assemble(cfg, conn, client=_stock_client([]), run=ff) == 0      # idempotent
     assert len(ff.cmds) == 1
+
+
+def test_hook_title_and_series_from_script(env, monkeypatch):
+    cfg, conn, _ = env
+    monkeypatch.setenv("PEXELS_API_KEY", "k")
+    _voiced(cfg, conn)
+    conn.execute("UPDATE candidates SET category = 'wow-facts'")
+    conn.execute("UPDATE scripts SET notes = ?", (json.dumps({"hook_title": "مزاد لا يصدق"}, ensure_ascii=False),))
+    conn.commit()
+    ff = FakeFFmpeg()
+    assert runner.assemble(cfg, conn, client=_stock_client([]), run=ff) == 0
+    notes = json.loads(conn.execute("SELECT notes FROM videos").fetchone()[0])
+    assert notes["hook_title"] == "مزاد لا يصدق" and notes["series"] == "هل تعلم؟"
+    assert "hook.txt" in " ".join(ff.cmds[0])
 
 
 def test_no_stock_key_changes_nothing(env):
@@ -240,10 +294,13 @@ def test_real_render_snapshot(env):
     subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.6",
                     "-ar", "48000", "-ac", "1", str(voice / "1.wav")], check=True)
     segs = render.segments_for(SPANS, [[Path("assets/stock/land.mp4")]] * 2, 2.6)
-    lst = subtitles.render_sequence(WORDS, SPANS, work, 3.6)
+    lst = subtitles.render_sequence(WORDS, SPANS, work, 3.6, hide_until=0.5)
+    look = {"id": "raij", "name": "رائج"}
     plan = render.Plan(segs, Path("assets/generated/voice/1.wav"), lst, 1250,
-                       render.endcard({"id": "raij", "name": "رائج"}, work / "e.png"), 1.0,
-                       tmp / "assets/generated/video/1.mp4")
+                       brand.endcard(look, work / "e.png", "هل تعلم؟"), 1.0,
+                       tmp / "assets/generated/video/1.mp4",
+                       hook_list=brand.hook_sequence("عنوان قصير جدا", "هل تعلم؟", work, 0.5),
+                       logo=brand.logo_layer(look, work / "logo.png"), transition=0.3)
     out = render.render(cfg, plan)
     probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries",
                                        "stream=codec_type,width,height:format=duration", "-of", "json", str(out)],
@@ -330,6 +387,21 @@ def test_compose_makes_portrait_frame(tmp_path):
     Image.new("RGB", (1600, 900), (10, 200, 10)).save(src)
     out = portrait.compose(src, "Photo: Jane Doe / CC BY 2.0 via Wikimedia Commons", tmp_path / "f.jpg")
     assert Image.open(out).size == (1080, 1920)
+
+
+def test_xfade_chain_keeps_cut_times_and_length(env):
+    cfg, _, tmp = env
+    segs = [render.Segment(Path(f"assets/stock/{c}.mp4"), s) for c, s in (("a", 3.0), ("b", 2.5), ("c", 4.0))]
+    plan = render.Plan(segs, Path("assets/generated/voice/1.wav"), tmp / "assets/generated/video/1/subs.txt",
+                       1250, Path("assets/generated/video/1/e.png"), 2.0, tmp / "o.mp4", transition=0.3)
+    cmd = " ".join(render.command(cfg, plan))
+    assert "trim=duration=3.3," in cmd and "trim=duration=2.8," in cmd      # each clip runs into the next
+    assert ":offset=3.000[x1]" in cmd and ":offset=5.500[x2]" in cmd and "fade:duration=0.3:offset=9.500[bg]" in cmd
+    assert "concat=n=" not in cmd and plan.total == 11.5
+    assert "color=c=0xFFD400" in cmd                                        # progress bar
+    hard = render.command(cfg, render.Plan(segs, plan.voice, plan.subs_list, 1250, plan.endcard, 2.0, plan.out,
+                                           transition=0, progress_bar=False))
+    assert "concat=n=4" in " ".join(hard) and "xfade=" not in " ".join(hard)
 
 
 def test_still_segments_get_zoom_filter(env):

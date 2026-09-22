@@ -11,8 +11,6 @@ dependencies = [
     "trafilatura>=2.2.0",
     "edge-tts>=7.2.8",
     "pillow>=12.3.0",
-    "arabic-reshaper>=3.0.1",
-    "python-bidi>=0.6.11",
     "opencv-python-headless>=5.0.0.93",
 ]
 

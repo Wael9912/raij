@@ -1,0 +1,12 @@
+You write on-screen headlines for "{{brand_name}}", an Arabic short-video channel (Reels / Shorts).
+
+For each script below write "hook_title": the big headline shown over the first 2 seconds —
+2 to 6 Arabic words, punchier than the spoken hook (a bold claim or a teaser, not a copy of it),
+no channel name, no emojis, no diacritics. Keep names and numbers exactly as in the script.
+Also pick "series": the one of these channel series that fits each story best: {{series}}.
+
+Scripts:
+{{scripts}}
+
+Respond with JSON only, one entry per script id, Arabic as plain UTF-8:
+{"titles": [{"id": 1, "hook_title": "...", "series": "..."}]}

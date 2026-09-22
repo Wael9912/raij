@@ -43,6 +43,10 @@ If a beat is about a specific real public figure named on the card, add "person"
 as on English Wikipedia (e.g. "Gianni Infantino"). We then show a licensed photo of them. Omit
 "person" for anyone who isn't a well-known public figure, and for groups or organisations.
 
+Also write "hook_title": the big on-screen headline shown over the first 2 seconds — 2 to 6 Arabic
+words, punchier than the spoken hook (a bold claim or a teaser, not a copy of it), no channel name.
+And "series": the one of these channel series that fits the story best: {{series}}.
+
 Also write "description_en": 1–2 English sentences for the post caption, and "hashtags": 5–8 tags
 mixing Arabic and English, each starting with #.
 {{extra}}
@@ -52,4 +56,4 @@ Use exactly this shape:
            {"role": "body", "text": "...", "broll_keywords": ["..."], "person": "Full Name"},
            {"role": "payoff", "text": "...", "broll_keywords": ["..."]},
            {"role": "cta", "text": "...", "broll_keywords": ["..."]}],
- "description_en": "...", "hashtags": ["#...", "#..."]}
+ "hook_title": "...", "series": "...", "description_en": "...", "hashtags": ["#...", "#..."]}
