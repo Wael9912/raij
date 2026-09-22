@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from src import db, textshape
 from src.config import load_config
@@ -143,6 +144,61 @@ def cmd_services(cfg, conn, args) -> int:
     return 0
 
 
+def daily_due(cfg, conn, now=None) -> str | None:
+    """Local date string if today's run-daily hasn't started and it's past schedule.run_daily_at."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = now or datetime.now(ZoneInfo(cfg.get("schedule.timezone", "Africa/Cairo")))
+    today = now.strftime("%Y-%m-%d")
+    if now.strftime("%H:%M") >= str(cfg.get("schedule.run_daily_at", "07:00")) and \
+            db.get_flag(conn, "last_daily_run") != today:
+        return today
+    return None
+
+
+def cmd_tick(cfg, conn, args) -> int:
+    """One short pass for hosts without always-on processes (GitHub Actions, every ~10 min): start the daily
+    run when due, handle queued Telegram taps, publish approvals. Touches data/.changed when the state changed,
+    so the caller knows whether to save it."""
+    from src.publish.runner import publish
+    from src.review.bot import poll
+    from src.review.runner import make_bot
+    before = conn.total_changes
+    code = 0
+    today = daily_due(cfg, conn)
+    if today and not args.dry_run:
+        db.set_flag(conn, "last_daily_run", today)          # set first: a crash mustn't loop the whole day
+        code |= cmd_run_daily(cfg, conn, args)
+    elif today:
+        log.info("[dry run] daily run is due (%s)", today)
+    if not args.dry_run:
+        try:
+            bot, chat = make_bot(cfg)
+            while poll(cfg, conn, bot, chat, once=True):     # drain every queued tap
+                pass
+        except Exception as exc:
+            log.error("Telegram pass failed: %s", exc)
+            code = 1
+    code |= publish(cfg, conn, dry_run=args.dry_run)
+    if conn.total_changes != before and not args.dry_run:
+        (cfg.root / "data" / ".changed").touch()
+    log.info("Tick done (%s)", "state changed" if conn.total_changes != before else "no changes")
+    return code
+
+
+def cmd_state(cfg, conn, args) -> int:
+    """pack/unpack the encrypted state bundle (GitHub Actions persistence)."""
+    from src import state
+    path = Path(args.file)
+    if args.action == "pack":
+        state.pack(cfg, path, with_media=not args.db_only)
+        log.info("State packed → %s (%.1f MB)", path, path.stat().st_size / 1e6)
+    else:
+        names = state.unpack(cfg, path)
+        log.info("State restored: %d file(s)", len(names))
+    return 0
+
+
 HANDLERS = {name: _not_implemented(name) for name in STAGES}
 HANDLERS["discover"] = cmd_discover
 HANDLERS["rank"] = cmd_rank
@@ -222,6 +278,8 @@ def build_parser() -> argparse.ArgumentParser:
                              cmd_install_services),
         "uninstall-services": ("Stop and remove the background services", cmd_uninstall_services),
         "services": ("Show background service status", cmd_services),
+        "tick": ("One short pass: daily run if due, Telegram taps, publish (for GitHub Actions)", cmd_tick),
+        "state": ("Pack/unpack the encrypted state bundle", cmd_state),
         "pause": ("Kill switch: halt all publishing", cmd_pause),
         "resume": ("Re-enable publishing", cmd_resume),
     }
@@ -232,6 +290,10 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "discover":
             p.add_argument("--source", action="append", choices=["youtube", "reddit", "trends", "rss"],
                            help="Only run this source (repeatable)")
+        if name == "state":
+            p.add_argument("action", choices=["pack", "unpack"])
+            p.add_argument("file", help="Encrypted bundle path")
+            p.add_argument("--db-only", action="store_true", help="Pack the database only (no media)")
         if name == "report":
             p.add_argument("--weekly", action="store_true", help="Send the weekly report to Telegram now")
     return parser
@@ -247,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
     # httpx logs full request URLs at INFO, and those carry API keys in the query string.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     cfg = load_config(args.config)
+    if args.command == "state":                  # must not hold the DB open while it's replaced
+        return args.func(cfg, None, args)
     conn = db.connect(cfg.db_path)
     try:
         db.init_db(conn)

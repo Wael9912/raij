@@ -143,7 +143,18 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
    (20 req/day on flash-latest, fallbacks after) is the likely bottleneck with 5 picks/day.
 3. Later: YouTube Data API key for YouTube discovery; Pixabay key; CC0 music in `assets/music/`.
 
-## Server ($0) — Oracle Cloud Always Free (owner's choice, 2026-09-22)
+## Hosting — GitHub Actions (owner's choice 2026-09-22; Oracle needs a card, unavailable in Egypt)
+
+Public repo `Wael9912/raij`, workflow `.github/workflows/raij.yml` every 10 min → `tick` (`daily_due` via
+`control.last_daily_run` in Africa/Cairo, drain Telegram `poll(once=True)`, publish). State = `src/state.py`
+encrypted bundle (openssl aes-256-cbc pbkdf2, `RAIJ_STATE_KEY`) in the Actions cache (`raij-state-<run>`; restore
+by prefix = newest; keep 3). `data/.changed` (conn.total_changes moved) decides whether to save; idle publish
+writes nothing. Bootstrap = release `state-bootstrap` (delete after the first cached save, or a lost cache would
+restore a stale DB and re-post). TikTok export is also sent to Telegram (the runner's folder is gone after the
+job). Weekly report also sends an encrypted DB-only backup. Commits use the GitHub noreply email (owner's Gmail
+must not be public). Mac launchd services stay as the fallback (uninstalled while Actions runs — one poller only).
+
+## Server — Oracle Cloud Always Free (not used: needs a card)
 
 Target: Ubuntu 24.04 on VM.Standard.A1.Flex (ARM, 4 OCPU / 24 GB), `ubuntu@<ip>`, repo at `~/social-media-automation`.
 - `deploy/setup-server.sh` (on server): apt ffmpeg + libfribidi0/libraqm0 (Pillow raqm), TZ Africa/Cairo, uv, `uv sync`,

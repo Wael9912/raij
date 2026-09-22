@@ -1,0 +1,109 @@
+# Ra'ij on GitHub Actions ($0, no server). Every ~10 min: restore the encrypted state, run one `tick`
+# (daily pipeline when due at 07:00 Cairo, Telegram taps, publishing), save the state if it changed.
+# Master switch: repository variable RAIJ_ENABLED=true. Secrets: RAIJ_ENV (.env contents),
+# RAIJ_STATE_KEY, RAIJ_YOUTUBE_TOKEN, RAIJ_CLIENT_SECRET. See SETUP.md "GitHub Actions".
+name: raij
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # keep-alive commit (GitHub pauses schedules after 60 idle days)
+  actions: write         # prune old state caches
+
+concurrency:
+  group: raij-state      # one run at a time: they share one state
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    if: vars.RAIJ_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      RAIJ_STATE_KEY: ${{ secrets.RAIJ_STATE_KEY }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: System packages (ffmpeg, Arabic shaping)
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends ffmpeg libfribidi0 libraqm0
+
+      - name: Python deps
+        run: uv sync --frozen --no-dev
+
+      - name: Keys
+        env:
+          RAIJ_ENV: ${{ secrets.RAIJ_ENV }}
+          RAIJ_YOUTUBE_TOKEN: ${{ secrets.RAIJ_YOUTUBE_TOKEN }}
+          RAIJ_CLIENT_SECRET: ${{ secrets.RAIJ_CLIENT_SECRET }}
+        run: |
+          umask 077
+          mkdir -p data
+          printf '%s\n' "$RAIJ_ENV" > .env
+          [ -n "$RAIJ_CLIENT_SECRET" ] && printf '%s' "$RAIJ_CLIENT_SECRET" > client_secret.json
+          [ -n "$RAIJ_YOUTUBE_TOKEN" ] && printf '%s' "$RAIJ_YOUTUBE_TOKEN" > data/youtube.token.json
+          true
+
+      - name: Restore state (cache)
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: state.enc
+          key: raij-state-${{ github.run_id }}
+          restore-keys: raij-state-
+
+      - name: Unpack state
+        id: unpack
+        run: |
+          if [ ! -f state.enc ]; then
+            echo "No cached state — trying the one-time bootstrap release"
+            gh release download state-bootstrap --pattern state.enc || {
+              echo "::error::No state found. Refusing to start from an empty database (it would re-post everything)."; exit 1; }
+          fi
+          uv run python -m src.main state unpack state.enc
+
+      - name: Tick
+        run: uv run python -m src.main tick
+
+      - name: Pack state
+        id: pack
+        if: always() && steps.unpack.outcome == 'success'
+        run: |
+          if [ -f data/.changed ]; then
+            uv run python -m src.main state pack state.enc
+            echo "save=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "State unchanged — not saving"
+          fi
+
+      - name: Save state (cache)
+        if: always() && steps.pack.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: state.enc
+          key: raij-state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Prune old state caches (keep 3)
+        if: always() && steps.pack.outputs.save == 'true'
+        run: |
+          gh cache list --key raij-state- --sort created_at --order desc --limit 50 --json id --jq '.[3:][].id' \
+            | xargs -r -n1 gh cache delete || true
+
+      - name: Keep-alive commit (every ~45 days)
+        if: always()
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 45 * 86400 )) ]; then
+            git config user.name "raij-bot"; git config user.email "raij-bot@users.noreply.github.com"
+            git commit --allow-empty -m "keep-alive (scheduled workflows pause after 60 idle days)"
+            git push
+          fi

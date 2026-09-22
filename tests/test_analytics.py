@@ -256,3 +256,80 @@ def test_systemd_units_for_linux_server(env):
     service._install_systemd(cfg, run, cfg.root / "units")
     assert sum(c[:2] == ["sudo", "install"] for c in cmds) == 5
     assert ["sudo", "systemctl", "enable", "--now", "raij-bot.service", "raij-daily.timer", "raij-publish.timer"] in cmds
+
+
+# --- GitHub Actions mode -------------------------------------------------------
+
+def test_state_bundle_roundtrip_keeps_live_media_only(env, monkeypatch, tmp_path):
+    from src import state
+    cfg, conn, root = env
+    monkeypatch.setenv("RAIJ_STATE_KEY", "k" * 40)
+    _published(conn, 1, "tech", "أ")
+    conn.execute("UPDATE videos SET status = 'published'")
+    vid = root / "assets/generated/video"
+    vid.mkdir(parents=True)
+    for n in (1, 2):
+        (vid / f"{n}.mp4").write_bytes(b"v" * 10)
+    (root / "assets/generated/voice").mkdir(parents=True)
+    (root / "assets/generated/voice/9.wav").write_bytes(b"w")
+    (root / "assets/generated/voice/9.words.json").write_text("{}")
+    conn.execute("UPDATE videos SET video_path = 'assets/generated/video/1.mp4'")
+    conn.execute("INSERT INTO videos (id, script_id, status, video_path, voice_path) VALUES "
+                 "(2, 1, 'in_review', 'assets/generated/video/2.mp4', 'assets/generated/voice/9.wav')")
+    conn.commit()
+    bundle = state.pack(cfg, tmp_path / "s.enc")
+    assert b"SQLite" not in bundle.read_bytes()[:64]                # encrypted
+    other = tmp_path / "fresh"
+    cfg.root = other
+    cfg.db_path = other / "data/pipeline.db"
+    names = state.unpack(cfg, bundle)
+    assert sorted(names) == ["assets/generated/video/2.mp4", "assets/generated/voice/9.wav",
+                             "assets/generated/voice/9.words.json", "data/pipeline.db"]      # published #1 dropped
+    restored = db.connect(cfg.db_path)
+    assert restored.execute("SELECT count(*) FROM videos").fetchone()[0] == 2
+    monkeypatch.setenv("RAIJ_STATE_KEY", "x" * 40)
+    with pytest.raises(state.StateError, match="wrong RAIJ_STATE_KEY"):
+        state.unpack(cfg, bundle)
+
+
+def test_daily_due_once_per_local_day(env):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from src.main import daily_due
+    cfg, conn, _ = env
+    cairo = ZoneInfo("Africa/Cairo")
+    assert daily_due(cfg, conn, datetime(2026, 9, 23, 6, 59, tzinfo=cairo)) is None
+    assert daily_due(cfg, conn, datetime(2026, 9, 23, 7, 5, tzinfo=cairo)) == "2026-09-23"
+    db.set_flag(conn, "last_daily_run", "2026-09-23")
+    assert daily_due(cfg, conn, datetime(2026, 9, 23, 22, 0, tzinfo=cairo)) is None
+    assert daily_due(cfg, conn, datetime(2026, 9, 24, 7, 0, tzinfo=cairo)) == "2026-09-24"
+
+
+def test_tiktok_goes_to_telegram_and_failure_fails_the_post(env, monkeypatch):
+    from src.publish import tiktok
+    from src.publish.common import PostText, PublishError
+    from src.review import runner as review_runner
+    cfg, _, root = env
+    video = root / "v.mp4"
+    video.write_bytes(b"x")
+    sent = []
+
+    class Bot:
+        def send_video(self, chat, path, caption, **kw):
+            sent.append(("video", caption))
+            return {"message_id": 5}
+
+        def send_message(self, chat, text, **kw):
+            sent.append(("text", text, kw.get("reply_to_message_id")))
+
+    monkeypatch.setattr(review_runner, "make_bot", lambda cfg: (Bot(), "chat"))
+    posted = tiktok.export(cfg, None, video, PostText("t", "CAPTION", []), 7)
+    assert posted.status == "exported" and sent[1] == ("text", "CAPTION", 5) and "TikTok — #7" in sent[0][1]
+
+    class Down(Bot):
+        def send_video(self, *a, **kw):
+            from src.review.telegram import TelegramError
+            raise TelegramError("sendVideo: HTTP 502")
+    monkeypatch.setattr(review_runner, "make_bot", lambda cfg: (Down(), "chat"))
+    with pytest.raises(PublishError, match="TikTok copy"):
+        tiktok.export(cfg, None, video, PostText("t", "CAPTION", []), 7)

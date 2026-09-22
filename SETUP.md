@@ -121,7 +121,24 @@ ffmpeg -hide_banner -encoders | grep libx264      # H.264 encoder must be presen
 
 ---
 
-## Running without a terminal (Phase 9)
+## GitHub Actions — how Ra'ij runs 24/7 for $0 (current setup)
+
+No server and no card: `.github/workflows/raij.yml` runs every ~10 min on GitHub's machines (public repo =
+free, unlimited minutes). Each run restores the encrypted state (DB + media still needed) from the Actions
+cache, runs `tick` — the daily pipeline once a day after 07:00 Cairo, every queued Telegram tap, publishing —
+and saves the state again if anything changed. Taps are handled within ~10–15 min (GitHub's schedule drifts).
+
+- Secrets (repo → Settings → Secrets and variables → Actions): `RAIJ_ENV` (the .env contents), `RAIJ_STATE_KEY`
+  (random, also in the Mac's .env — needed to open backups), `RAIJ_YOUTUBE_TOKEN` (data/youtube.token.json),
+  `RAIJ_CLIENT_SECRET` (client_secret.json). Variable `RAIJ_ENABLED=true` is the master switch.
+- Adding keys later (e.g. Meta): update `RAIJ_ENV` (`gh secret set RAIJ_ENV < .env`).
+- Logs: the repo's **Actions** tab. TikTok copies arrive in Telegram. Weekly: the report + an encrypted DB backup.
+- Only one run at a time (`concurrency`); a run whose state restore failed never saves (an empty DB would re-post
+  everything). A keep-alive commit every ~45 days stops GitHub pausing the schedule.
+- Terms: GitHub intends Actions for software projects; if it ever disables the workflow, fall back to the Mac
+  (`install-services` below) — restore the latest state first (`state unpack` on the weekly backup).
+
+## Running without a terminal on the Mac (fallback)
 
 ```bash
 uv run python -m src.main install-services     # bot + daily pipeline + publish job, as macOS launchd agents

@@ -43,7 +43,27 @@ def send_weekly(cfg: Config, conn: sqlite3.Connection, bot=None) -> str:
     else:
         chat = cfg.secret("TELEGRAM_CHAT_ID")
     bot.send_message(chat, text, disable_web_page_preview=True)
+    _backup(cfg, bot, chat)
     return text
+
+
+def _backup(cfg: Config, bot, chat: str) -> None:
+    """Weekly encrypted DB copy to Telegram — the off-site backup when state lives in a CI cache."""
+    import os
+    import tempfile
+    from pathlib import Path
+    from src import state
+    if not os.environ.get("RAIJ_STATE_KEY"):
+        return
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = state.pack(cfg, Path(tmp) / f"raij-db-{datetime.now(timezone.utc):%Y%m%d}.enc", with_media=False)
+            with path.open("rb") as f:
+                bot.call("sendDocument", files={"document": (path.name, f, "application/octet-stream")}, chat_id=chat,
+                         caption="🔐 Weekly DB backup (encrypted with RAIJ_STATE_KEY). Keep it; restore with "
+                                 "`state unpack`.")
+    except Exception as exc:
+        log.warning("Weekly backup not sent: %s", exc)
 
 
 def report(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,

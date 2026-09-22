@@ -114,6 +114,8 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
         log.info("[dry run] nothing uploaded or written")
         return 0
 
+    if not videos:                                   # nothing to do: no run row (keeps idle ticks write-free)
+        return 0
     run_id = conn.execute("INSERT INTO runs (command) VALUES ('publish')").lastrowid
     conn.commit()
     done, failed, skipped, notices = [], [], set(), []
