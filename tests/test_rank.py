@@ -63,6 +63,28 @@ def test_llm_falls_back_past_failing_provider(env, monkeypatch):
     assert hits == ["generativelanguage.googleapis.com", "api.groq.com"]
 
 
+def test_gemini_falls_through_models_on_daily_quota(env, monkeypatch):
+    cfg, _, _ = env
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("GEMINI_MODEL", "big")
+    monkeypatch.setitem(cfg.data["llm"], "gemini_fallback_models", ["lite"])
+    monkeypatch.setattr(llm, "_EXHAUSTED", set())
+    hits = []
+
+    def handler(request):
+        model = request.url.path.split("/")[-1].split(":")[0]
+        hits.append(model)
+        if model == "big":
+            return httpx.Response(429, json={"error": {
+                "message": "quota", "details": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}})
+        return _gemini_reply({"ok": model})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert llm.complete_json(cfg, "q", client=client) == {"ok": "lite"}
+    assert llm.complete_json(cfg, "q", client=client) == {"ok": "lite"}
+    assert hits == ["big", "lite", "lite"]          # no backoff retries on a daily cap; skipped after
+
+
 def test_llm_error_lists_every_provider(env):
     cfg, _, _ = env
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))

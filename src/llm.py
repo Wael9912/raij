@@ -22,6 +22,8 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Free tiers return 429/503 under load; back off 1+2+4+8s before falling through.
 CLOUD_RETRIES = 4
+# Gemini models that returned 429 this process; skipped until the next run.
+_EXHAUSTED: set[str] = set()
 
 
 class LLMError(RuntimeError):
@@ -55,14 +57,31 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
         body["systemInstruction"] = {"parts": [{"text": system}]}
     if json_mode:
         body["generationConfig"]["responseMimeType"] = "application/json"
-    model = cfg.secret("GEMINI_MODEL", "gemini-flash-latest")
-    resp = request(client, "POST", GEMINI_URL.format(model=model), json=body,
-                   headers={"x-goog-api-key": key}, retries=CLOUD_RETRIES)
-    try:
-        parts = resp.json()["candidates"][0]["content"]["parts"]
-    except (KeyError, IndexError, ValueError):
-        raise FetchError("Gemini returned no candidates (blocked or empty)") from None
-    return "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    # Free-tier quotas are per model (gemini-flash-latest allows only 20 requests/day), so
+    # fall through to the next model when one is out of quota or overloaded.
+    models = [cfg.secret("GEMINI_MODEL", "gemini-flash-latest")] + cfg.get("llm.gemini_fallback_models", [])
+    last: FetchError | None = None
+    for model in dict.fromkeys(models):
+        if model in _EXHAUSTED:
+            continue
+        try:
+            resp = request(client, "POST", GEMINI_URL.format(model=model), json=body,
+                           headers={"x-goog-api-key": key}, retries=CLOUD_RETRIES)
+        except FetchError as exc:
+            if "HTTP 429" in str(exc) or "HTTP 503" in str(exc):
+                if "HTTP 429" in str(exc):
+                    _EXHAUSTED.add(model)
+                log.warning("Gemini %s unavailable, trying next model: %s", model, exc)
+                last = exc
+                continue
+            raise
+        try:
+            parts = resp.json()["candidates"][0]["content"]["parts"]
+        except (KeyError, IndexError, ValueError):
+            raise FetchError(f"Gemini {model} returned no candidates (blocked or empty)") from None
+        log.debug("Gemini answered with %s", model)
+        return "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    raise last or FetchError("every Gemini model is out of quota this run")
 
 
 def _groq(cfg: Config, client: httpx.Client, prompt: str, system: str | None, json_mode: bool) -> str:

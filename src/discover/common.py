@@ -114,7 +114,9 @@ def request(
         else:
             if resp.status_code < 400:
                 return resp
-            if resp.status_code not in (429, 500, 502, 503, 504) or attempt == retries:
+            # A per-day quota (Google APIs say "...PerDay...") won't reset during the backoff.
+            daily_cap = resp.status_code == 429 and "PerDay" in resp.text
+            if resp.status_code not in (429, 500, 502, 503, 504) or attempt == retries or daily_cap:
                 raise FetchError(f"{method} {safe_url}: HTTP {resp.status_code} {_api_message(resp)}".rstrip())
         time.sleep(2 ** attempt)
     raise AssertionError("unreachable")
