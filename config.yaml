@@ -6,7 +6,8 @@ brands:
     language: ar
     tone: "Sudanese-friendly, MSA-lean, warm and curious"
     voice:
-      name: ar-EG-ShakirNeural     # alt: ar-SA-HamedNeural
+      name: ar-EG-ShakirNeural
+      alt: ar-SA-HamedNeural       # used by the review bot's 🎙 Re-voice button
       rate: "+10%"                 # Shorts pacing; Arabic neural voices speak ~1.85 words/s at +0%
       pitch: "+0Hz"
     subtitle_font: "Noto Naskh Arabic"

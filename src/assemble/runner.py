@@ -69,7 +69,9 @@ def _brand(cfg: Config, brand_id: str) -> dict[str, Any]:
 
 
 def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
-                   run: render.RunCmd = render.run_cmd, recent: set[str] | None = None) -> dict[str, Any]:
+                   run: render.RunCmd = render.run_cmd, recent: set[str] | None = None,
+                   exclude: set[str] | None = None) -> dict[str, Any]:
+    """`exclude` (provider:id) clips are never picked — used by review's "new b-roll"."""
     beats_text = json.loads(video["beats"])
     timing = json.loads((cfg.root / video["voice_path"]).with_suffix(".words.json").read_text(encoding="utf-8"))
     spans, voice_s = timing["beats"], timing["duration"]
@@ -82,7 +84,7 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     work.mkdir(parents=True)
     renderer = subtitles.Renderer()
 
-    used: set[str] = set()
+    used: set[str] = set(exclude or ())
     photos: dict[str, portrait.Photo | None] = {}
     manifest, clips_per_beat, credits = [], [], []
     for i, (beat, span) in enumerate(zip(beats_text, spans)):

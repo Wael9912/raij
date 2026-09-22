@@ -61,6 +61,33 @@ def cmd_assemble(cfg, conn, args) -> int:
     return assemble(cfg, conn, dry_run=args.dry_run)
 
 
+def cmd_review(cfg, conn, args) -> int:
+    from src.review.runner import review
+    return review(cfg, conn, dry_run=args.dry_run)
+
+
+def cmd_bot(cfg, conn, args) -> int:
+    """Long-running: handle review buttons and /pause /resume /status from Telegram."""
+    from src.review.bot import poll
+    from src.review.runner import make_bot
+    from src.review.telegram import TelegramError
+    if args.dry_run:
+        log.info("[dry run] would long-poll Telegram for review decisions (chat %s)",
+                 "set" if cfg.secret("TELEGRAM_CHAT_ID") else "NOT set")
+        return 0
+    try:
+        bot, chat = make_bot(cfg)
+    except TelegramError as exc:
+        log.error("Telegram not configured: %s (see SETUP.md §4)", exc)
+        return 1
+    log.info("Review bot listening — Ctrl+C to stop")
+    try:
+        poll(cfg, conn, bot, chat)
+    except KeyboardInterrupt:
+        log.info("Review bot stopped")
+    return 0
+
+
 HANDLERS = {name: _not_implemented(name) for name in STAGES}
 HANDLERS["discover"] = cmd_discover
 HANDLERS["rank"] = cmd_rank
@@ -68,6 +95,7 @@ HANDLERS["extract"] = cmd_extract
 HANDLERS["script"] = cmd_script
 HANDLERS["voice"] = cmd_voice
 HANDLERS["assemble"] = cmd_assemble
+HANDLERS["review"] = cmd_review
 
 
 def cmd_init_db(cfg, conn, args) -> int:
@@ -116,6 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
         "init-db": ("Create/upgrade the SQLite schema", cmd_init_db),
         **{name: (help_, HANDLERS[name]) for name, help_ in STAGES.items()},
         "run-daily": ("Run every stage in order", cmd_run_daily),
+        "bot": ("Listen for Telegram review decisions (long-running)", cmd_bot),
         "pause": ("Kill switch: halt all publishing", cmd_pause),
         "resume": ("Re-enable publishing", cmd_resume),
     }

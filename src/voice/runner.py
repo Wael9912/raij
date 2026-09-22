@@ -42,16 +42,17 @@ def _brand(cfg: Config, brand_id: str) -> dict[str, Any]:
     raise VoiceError(f"brand {brand_id!r} is not in config")
 
 
-def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path,
-                 synth=tts.synthesize, run: RunCmd = tts.run_cmd) -> dict[str, Any]:
-    """Synthesize + normalize one script. Returns the videos-row fields."""
+def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path, synth=tts.synthesize,
+                 run: RunCmd = tts.run_cmd, voice_name: str | None = None, stem: str | None = None) -> dict[str, Any]:
+    """Synthesize + normalize one script. Returns the videos-row fields. `voice_name`/`stem` let a
+    re-voice use another voice without overwriting the first take."""
     brand = _brand(cfg, script["brand_id"])
     v = brand.get("voice") or {}
-    voice, rate, pitch = v.get("name", "ar-EG-ShakirNeural"), v.get("rate", "+0%"), v.get("pitch", "+0Hz")
+    voice, rate, pitch = voice_name or v.get("name", "ar-EG-ShakirNeural"), v.get("rate", "+0%"), v.get("pitch", "+0Hz")
     max_s, min_s = cfg.get("voice.max_seconds", 58), cfg.get("voice.min_seconds", 40)
     beats = json.loads(script["beats"])
     text = tts.speech_text(beats)
-    wav = out_dir / f"{script['id']}.wav"
+    wav = out_dir / f"{stem or script['id']}.wav"
 
     with tempfile.TemporaryDirectory(prefix="raij-tts-") as tmp:
         raw = Path(tmp) / "raw.mp3"

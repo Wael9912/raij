@@ -15,8 +15,8 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 4 Script | ✅ done | `d860e76`, `dde9d8c` | live: 5/5 passed (3.5/3.6-flash); Arabic-source similarity 0.06–0.10; number gate caught 211→201, 953,531→995,000 |
 | 5 Voice | ✅ done | `5aba7c1` | live: 5/5 voiced, 44–53s at +10%, −14.2 LUFS / −1.5 dBTP; Gemini transcription of a clip matched the script word for word |
 | 6 Assemble | ✅ done | `7223ffd`, `e1e6dd9`, `cf0b0b3` | live with Pexels: 5/5 rendered, 45–54s, 7–10 clips, 18–37 MB; faceless b-roll + licensed Commons photos of public figures |
-| 7 Telegram review | ⏭ next | | see plan below — needs `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` |
-| 8 Publish | ⬜ | | |
+| 7 Telegram review | 🟡 built | next commit | mocked-Telegram tests + real edit/new-b-roll regeneration run (Gemini, edge-tts, Pexels, ffmpeg) on a DB copy. **Live Telegram blocked: no `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`** |
+| 8 Publish | ⏭ next | | see plan below |
 | 9 Analytics + runner | ⬜ | | |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`. Missing: YouTube, Reddit, Groq, Pixabay, Telegram, Meta, YouTube OAuth.
@@ -95,26 +95,34 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   news-agency photos (copyright). Credit drawn on the frame and kept in `videos.notes.credits` →
   **Phase 7/8 must append credits to the caption** (CC BY requirement). No free photo → faceless (e.g. Accorsi).
   Known gap: occluded faces (inside a helmet) can pass the detector — human review.
+- Review: plain Bot API over httpx (`review/telegram.py`; token only in the URL path, never in errors). `review`
+  sends video (preview re-encode if >50 MB) + caption (hook, description, tags, sources, credits) + script
+  message; video → `in_review` with `review_msg_id`. `bot` long-polls; offset in `control.telegram_offset`,
+  saved before handling (no replays). Only `TELEGRAM_CHAT_ID` is obeyed. Buttons are removed on the first tap.
+  Approve/reject → `approvals` row + video status. Edit → ForceReply prompt, `control.pending_edit`; the next text
+  is the note → `write_script(edit_note)` → new script version (old `superseded`, `edit_note` saved) → voice
+  (`<script>_v<video>.wav`) → assemble → new video row (`parent_id`) → resent; old video `superseded`.
+  New b-roll: same voice, `assemble_video(exclude=old stock ids)`. Re-voice: toggles brand `voice.alt`/`name`.
+  Regeneration failure → message + original's buttons restored.
 
-## Plan — Phase 7 (Telegram review)
+## Plan — Phase 8 (Publish)
 
-**Prerequisites (user):** `TELEGRAM_BOT_TOKEN` (@BotFather) + `TELEGRAM_CHAT_ID` (SETUP.md §4). First, once a
-stock key exists, run `assemble` live and look at the 5 real videos (b-roll relevance, crop, file size).
+**Prerequisites (user):** Meta (`META_PAGE_ID`, `META_IG_USER_ID`, `META_PAGE_ACCESS_TOKEN`, SETUP §5) and YouTube
+OAuth (`YOUTUBE_OAUTH_CLIENT_SECRET_FILE`, SETUP §6). And Telegram first, so there are real approvals.
 
-- Plain Bot API over httpx (`src/review/telegram.py`) instead of python-telegram-bot: one less dependency, and
-  MockTransport tests like every other stage. Long polling (`getUpdates`), no webhook/server needed.
-- `review`: for each `rendered` video with no approval → `sendVideo` (≤50 MB; if bigger, re-encode a preview
-  copy with `-maxrate 5M` into `assets/generated/video/<id>.preview.mp4`) with caption = hook + description +
-  hashtags + sources + photo credits, and the full Arabic script as a follow-up message; inline keyboard
-  [✅ Approve] [❌ Reject] [✏️ Edit script] [🔁 New b-roll] [🎙 Re-voice]. Store `telegram_msg_id`.
-- `bot` (long-running) handles callbacks — **only from `TELEGRAM_CHAT_ID`**, everything else ignored:
-  approve/reject → `approvals` row (`decided_by` = Telegram user id); edit → ForceReply for the note →
-  `write_script(edit_note=…)` → voice → assemble → resend; new b-roll → assemble again excluding the previous
-  manifest's clip ids; re-voice → alternate brand voice (e.g. ar-SA-HamedNeural) → assemble → resend.
-  Commands `/pause`, `/resume`, `/status` (counts per stage). Every state in the DB, so restarts lose nothing.
-- Regenerated versions supersede the old video row (keep history); approvals point at the exact video shown.
-- Tests: callback auth rejects other chats, each button's DB transition, edit-note flow, oversized-video preview
-  path, pause/resume, dry run (prints what would be sent).
+Input: videos `status='approved'` with an `approvals` row `decision='approved'` for **that exact video id**.
+Hard rules: no approval row → never publish; `db.publishing_paused()` → publish nothing (log + Telegram note).
+- `posts` row per (video, platform) — UNIQUE already — `queued → published | failed | exported`, `attempts`, error.
+- **YouTube Shorts** (`publish/youtube.py`): OAuth installed-app flow once (token cached in `data/`, gitignored),
+  `videos.insert` resumable upload, title ≤100 chars (from hook), description = description_en + hashtags +
+  **photo credits** + "#Shorts"; `categoryId` from category; `selfDeclaredMadeForKids=false`. 1,600 quota units.
+- **Instagram Reels** (`publish/instagram.py`): Graph API needs a public video URL or resumable upload
+  (`upload_type=resumable` to rupload.facebook.com) → create container `media_type=REELS` → poll status → publish.
+- **Facebook Reels** (`publish/facebook.py`): `/{page-id}/video_reels` start → upload → finish with description.
+- **TikTok**: copy MP4 + caption .txt to `data/export/tiktok/<date>/` → status `exported`.
+- Retries with backoff; after the last failure → Telegram alert. Idempotent: published posts are never redone.
+- Tests: approval gate (no row / row for another video → refused), pause, per-platform request flows mocked,
+  resumable upload chunking, partial failure, TikTok export, dry run.
 
 ## Later phases — watch-outs
 

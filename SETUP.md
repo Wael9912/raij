@@ -63,6 +63,12 @@ uv run python -m src.main --help
 1. In Telegram, message **@BotFather**, send `/newbot`, and pick a name. Copy the token into `TELEGRAM_BOT_TOKEN`.
 2. Send any message to your new bot.
 3. Open `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `message.chat.id` into `TELEGRAM_CHAT_ID`.
+   (If the result is empty, send the bot another message and reload.)
+4. Send pending videos: `uv run python -m src.main review`
+5. Keep the button handler running (a spare terminal; Phase 9 adds a launchd service):
+   `uv run python -m src.main bot` — it only obeys `TELEGRAM_CHAT_ID`.
+   Buttons: ✅ Approve · ❌ Reject · ✏️ Edit script (reply with a note) · 🔁 New b-roll · 🎙 Re-voice.
+   Commands: `/status`, `/pause` (kill switch: no publishing), `/resume`.
 
 ---
 
