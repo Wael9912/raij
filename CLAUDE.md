@@ -11,7 +11,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 0 Scaffold | ✅ done | `94c9c31` | config loader, SQLite schema, CLI, SETUP.md draft |
 | 1 Discovery | ✅ done | `3c5728d`, `a877314` | live: 141 candidates/run keyless (Trends + 6 RSS). YouTube/Reddit coded + tested with mocks, **never run live** (no keys yet) |
 | 2 Rank & Select | ✅ done | `40288ba`, `e59f351` | live with Gemini: 30 screened → 5 selected, political flagged |
-| 3 Extract | ✅ done | `4a1d5e1`+next | live: 5/5 story cards (3 trends via news articles, 2 RSS articles). yt-dlp subs verified live on a real video; whisper fallback mocked only (`uv sync --group whisper` not installed) |
+| 3 Extract | ✅ done | `7672048`, `affe555` | live: 5/5 story cards (3 trends via news articles, 2 RSS articles). yt-dlp subs verified live on a real video; whisper fallback mocked only (`uv sync --group whisper` not installed) |
 | 4 Script | ⏭ next | | see plan below |
 | 5 Voice | ⬜ | | |
 | 6 Assemble | ⬜ | | |
@@ -70,9 +70,9 @@ Input: `stories` with no `scripts` row. Output: one `scripts` row per story per 
 - Structure: hook (≤3s) → body beats → payoff → CTA, `script.min_words`–`max_words` (110–150) Arabic words.
   Beats JSON `[{text, broll_keywords}]` (English stock-search keywords, 2–4 per beat); EN description + hashtags.
 - Similarity gate vs `stories.transcript`: cheap, offline — char n-gram (e.g. 4-gram) Jaccard/containment on
-  normalized Arabic (strip diacritics/tatweel, unify alef/yaa/taa marbuta). English sources need a cross-lingual
-  check: consider translating the script's facts isn't needed — compare only when source is Arabic, else rely on
-  the card-only prompt (note it in `scripts.similarity` as NULL). Above `script.similarity_threshold` → rewrite
+  normalized Arabic (strip diacritics/tatweel, unify alef/yaa/taa marbuta). N-grams can't compare an Arabic
+  script to an English source, so gate only Arabic-source stories; for English sources the card-only prompt is
+  the safeguard and `scripts.similarity` stays NULL. Above `script.similarity_threshold` → rewrite
   once with a "rephrase more freely" note → else status `rejected`.
 - Validate word count and beat shape; out-of-range → one retry, then `rejected` with reason in notes.
 - Status `passed` when gate + validation pass. Tests: Arabic normalization, n-gram similarity, gate → rewrite →
