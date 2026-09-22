@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     retellable    INTEGER,                          -- NULL=unchecked, 0/1
     rank_reason   TEXT,
     selected_at   TEXT,                             -- UTC; when rank picked it for the day
+    topic         TEXT,                             -- LLM story slug; one pick per topic
     status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -146,6 +147,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
 MIGRATIONS = [
     ("candidates", "last_seen_at", "TEXT"),
     ("candidates", "selected_at", "TEXT"),
+    ("candidates", "topic", "TEXT"),
 ]
 
 

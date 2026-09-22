@@ -28,6 +28,7 @@ class Verdict:
     retellable: bool
     category: str
     reason: str
+    topic: str | None = None
 
 
 def _clean(text: str | None, limit: int) -> str:
@@ -71,7 +72,8 @@ def parse_verdicts(payload: Any, ids: set[int], allowed: set[str]) -> list[Verdi
         if cid not in ids or category not in allowed or not isinstance(e.get("retellable"), bool):
             log.debug("Dropping malformed verdict: %r", e)
             continue
-        out.append(Verdict(cid, e["retellable"], category, str(e.get("reason") or "").strip()[:300]))
+        topic = re.sub(r"[^a-z0-9]+", "-", str(e.get("topic") or "").lower()).strip("-")[:60] or None
+        out.append(Verdict(cid, e["retellable"], category, str(e.get("reason") or "").strip()[:300], topic))
         ids.discard(cid)   # first answer per id wins
     return out
 

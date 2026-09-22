@@ -20,6 +20,8 @@ log = logging.getLogger("raij.llm")
 PROMPTS_DIR = ROOT / "src" / "prompts"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Free tiers return 429/503 under load; back off 1+2+4+8s before falling through.
+CLOUD_RETRIES = 4
 
 
 class LLMError(RuntimeError):
@@ -53,9 +55,9 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
         body["systemInstruction"] = {"parts": [{"text": system}]}
     if json_mode:
         body["generationConfig"]["responseMimeType"] = "application/json"
-    model = cfg.secret("GEMINI_MODEL", "gemini-2.5-flash")
+    model = cfg.secret("GEMINI_MODEL", "gemini-flash-latest")
     resp = request(client, "POST", GEMINI_URL.format(model=model), json=body,
-                   headers={"x-goog-api-key": key})
+                   headers={"x-goog-api-key": key}, retries=CLOUD_RETRIES)
     try:
         parts = resp.json()["candidates"][0]["content"]["parts"]
     except (KeyError, IndexError, ValueError):
@@ -75,7 +77,8 @@ def _groq(cfg: Config, client: httpx.Client, prompt: str, system: str | None, js
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    resp = request(client, "POST", GROQ_URL, json=body, headers={"Authorization": f"Bearer {key}"})
+    resp = request(client, "POST", GROQ_URL, json=body, headers={"Authorization": f"Bearer {key}"},
+                   retries=CLOUD_RETRIES)
     return resp.json()["choices"][0]["message"]["content"]
 
 

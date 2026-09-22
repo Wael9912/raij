@@ -14,9 +14,12 @@ Use "political" for elections, governments, parties, wars, armed conflict, prote
 sanctions, or politicians — even if the item is otherwise retellable.
 
 Write "reason" in English, one short sentence, saying why it does or doesn't retell well.
+Write "topic" as a short lowercase English slug naming the underlying story or subject, e.g.
+"us-airports-outage". Items about the same story MUST share the same topic, even when they come
+from different outlets or languages.
 
 Items (JSON):
 {{items}}
 
 Respond with JSON only, in exactly this shape, with one entry per input id:
-{"items": [{"id": 123, "retellable": true, "category": "tech", "reason": "..."}]}
+{"items": [{"id": 123, "retellable": true, "category": "tech", "topic": "new-chip-launch", "reason": "..."}]}

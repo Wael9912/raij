@@ -22,8 +22,9 @@ def _ts(hours_ago):
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("RAIJ_DB_PATH", str(tmp_path / "t.db"))
+    # Blank (not unset) so load_dotenv can't pull real keys from .env back in.
     for key in ("GEMINI_API_KEY", "GROQ_API_KEY"):
-        monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv(key, "")
     cfg = load_config()
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
@@ -140,6 +141,7 @@ def _classifier(calls):
         calls.append([it["title"] for it in items])
         return _gemini_reply({"items": [
             {"id": it["id"], "retellable": VERDICTS[it["title"]][0], "category": VERDICTS[it["title"]][1],
+             "topic": "gpu-launch" if it["title"] in ("gpu", "phone") else it["title"],
              "reason": f"because {it['title']}"} for it in items
         ]})
     return handler
@@ -162,6 +164,7 @@ def test_rank_selects_top_retellable(env, monkeypatch, capsys):
     assert len(titles) == 5
     assert "dance" not in titles and "vote" not in titles             # not retellable / political
     assert sum(1 for t in titles if t in ("chip", "gpu", "phone")) == 2   # max_per_category
+    assert "phone" not in titles                                      # same topic as "gpu"
     assert all(s["reason"] and s["score_parts"] for s in report["selected"])
     assert [f["title"] for f in report["flagged"]] == ["vote"]
     assert json.loads((tmp / f"{report['date']}.json").read_text()) == report

@@ -48,6 +48,7 @@ def _entry(row: dict[str, Any], parts: dict[str, float] | None = None) -> dict[s
         "source": row["source"],
         "region": row["region"],
         "category": row["category"],
+        "topic": row.get("topic"),
         "score": row["score"],
         "reason": row["rank_reason"],
     }
@@ -57,18 +58,26 @@ def _entry(row: dict[str, Any], parts: dict[str, float] | None = None) -> dict[s
 
 
 def pick(rows: list[dict[str, Any]], need: int, categories: set[str], max_per_category: int,
-         already: dict[str, int] | None = None) -> list[dict[str, Any]]:
-    """Highest-scoring retellable rows, at most max_per_category per category (counting `already`)."""
-    counts = dict(already or {})
+         already: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Highest-scoring retellable rows: at most max_per_category per category and one per topic,
+    counting what was `already` selected today."""
+    counts: dict[str, int] = {}
+    topics: set[str] = set()
+    for r in already or []:
+        counts[r["category"]] = counts.get(r["category"], 0) + 1
+        if r.get("topic"):
+            topics.add(r["topic"])
     chosen = []
     for r in sorted(rows, key=lambda r: r["score"] or 0, reverse=True):
         if len(chosen) >= need:
             break
         if r["retellable"] != 1 or r["status"] != "ranked" or r["category"] not in categories:
             continue
-        if counts.get(r["category"], 0) >= max_per_category:
+        if counts.get(r["category"], 0) >= max_per_category or (r.get("topic") and r["topic"] in topics):
             continue
         counts[r["category"]] = counts.get(r["category"], 0) + 1
+        if r.get("topic"):
+            topics.add(r["topic"])
         chosen.append(r)
     return chosen
 
@@ -121,20 +130,18 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
         for v in verdicts:
             new_status = "flagged" if v.category in flagged_cats else ("ranked" if v.retellable else "rejected")
             conn.execute(
-                "UPDATE candidates SET retellable = ?, category = ?, rank_reason = ?, status = ? WHERE id = ?",
-                (int(v.retellable), v.category, v.reason, new_status, v.id),
+                "UPDATE candidates SET retellable = ?, category = ?, rank_reason = ?, topic = ?, status = ? "
+                "WHERE id = ?",
+                (int(v.retellable), v.category, v.reason, v.topic, new_status, v.id),
             )
             by_id[v.id].update(retellable=int(v.retellable), category=v.category,
-                               rank_reason=v.reason, status=new_status)
+                               rank_reason=v.reason, topic=v.topic, status=new_status)
         notes["screened"] = len(verdicts)
         if status == "ok" and len(verdicts) < len(to_check):
             status = "partial"
         conn.commit()
 
-    counts: dict[str, int] = {}
-    for r in already:
-        counts[r["category"]] = counts.get(r["category"], 0) + 1
-    chosen = pick(list(by_id.values()), need, categories, max_per_cat, counts)
+    chosen = pick(list(by_id.values()), need, categories, max_per_cat, already)
     stamp = now.strftime("%Y-%m-%d %H:%M:%S")
     for r in chosen:
         conn.execute("UPDATE candidates SET status = 'selected', selected_at = ? WHERE id = ?", (stamp, r["id"]))
