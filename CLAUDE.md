@@ -133,58 +133,20 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
 
 ## Next up
 
-1. **Owner: Meta keys** (SETUP §5). Owner pastes App ID + App Secret + short-lived Graph Explorer user token;
-   we exchange it (`/oauth/access_token?grant_type=fb_exchange_token`) → `/me/accounts` Page token + id →
-   `/{page}?fields=instagram_business_account` → save `META_PAGE_ID`, `META_IG_USER_ID`, `META_PAGE_ACCESS_TOKEN`.
-   Then `publish` posts #20 #21 #23 to IG/FB (still `approved`, owing only IG/FB) if within 72h of approval
-   (≈2026-09-25 14:37 UTC; else raise `publish.max_age_hours`). Check `publish.meta_graph_version: v25.0` is accepted.
-   YouTube is done: OAuth consent screen published (In production), token in `data/youtube.token.json`.
-2. Watch the first unattended daily runs (07:00): `data/logs/daily.log`, Telegram cards. Gemini free quota
-   (20 req/day on flash-latest, fallbacks after) is the likely bottleneck with 5 picks/day.
-3. Later: YouTube Data API key for YouTube discovery; Pixabay key; CC0 music in `assets/music/`.
+**Live on GitHub Actions since 2026-09-22 19:07 Cairo** (repo Wael9912/raij, public; Mac services uninstalled).
+"check" now = `gh run list -R Wael9912/raij --workflow raij.yml` + `gh run view <id> --log`; the live DB is in the
+Actions cache — to inspect it: download the newest cache isn't possible via gh, so run with `workflow_dispatch`
+and read the log, or use the weekly encrypted backup from Telegram (`state unpack` with RAIJ_STATE_KEY from .env).
+**Never run the Mac pipeline/bot while Actions is enabled** (two Telegram pollers, two diverging DBs). To move back:
+`gh variable set RAIJ_ENABLED --body false`, restore the latest state on the Mac, `install-services`.
+Code changes: commit + `git push` (CI runs the tests; the next tick uses the new code).
 
-## Hosting — GitHub Actions (owner's choice 2026-09-22; Oracle needs a card, unavailable in Egypt)
-
-Public repo `Wael9912/raij`, workflow `.github/workflows/raij.yml` every 10 min → `tick` (`daily_due` via
-`control.last_daily_run` in Africa/Cairo, drain Telegram `poll(once=True)`, publish). State = `src/state.py`
-encrypted bundle (openssl aes-256-cbc pbkdf2, `RAIJ_STATE_KEY`) in the Actions cache (`raij-state-<run>`; restore
-by prefix = newest; keep 3). `data/.changed` (conn.total_changes moved) decides whether to save; idle publish
-writes nothing. Bootstrap = release `state-bootstrap` (delete after the first cached save, or a lost cache would
-restore a stale DB and re-post). TikTok export is also sent to Telegram (the runner's folder is gone after the
-job). Weekly report also sends an encrypted DB-only backup. Commits use the GitHub noreply email (owner's Gmail
-must not be public). Mac launchd services stay as the fallback (uninstalled while Actions runs — one poller only).
-
-## Server — Oracle Cloud Always Free (not used: needs a card)
-
-Target: Ubuntu 24.04 on VM.Standard.A1.Flex (ARM, 4 OCPU / 24 GB), `ubuntu@<ip>`, repo at `~/social-media-automation`.
-- `deploy/setup-server.sh` (on server): apt ffmpeg + libfribidi0/libraqm0 (Pillow raqm), TZ Africa/Cairo, uv, `uv sync`,
-  shaping check, pytest. `service.py` on Linux writes systemd units to /etc/systemd/system via sudo:
-  `raij-bot.service` (Restart=always), `raij-daily.timer` (`OnCalendar=… 07:00 Africa/Cairo`, Persistent),
-  `raij-publish.timer` (every 30 min). Logs still `data/logs/*.log`.
-- `deploy/push.sh` (on Mac; `RAIJ_SERVER`, `RAIJ_SSH_KEY` in the Mac's .env): rsync code only, never the server's
-  data/ or keys, then `uv sync` + restart services. `--with-data` = one-time migration (data/, .env,
-  client_secret.json, generated media).
-- **Cutover order**: Mac `uninstall-services` FIRST (one Telegram poller only, DB quiescent) → `push.sh --with-data`
-  → `setup-server.sh` → `install-services` on server → check bot log + `/status`. After cutover the server's DB is
-  the source of truth; "check" = ssh + read logs/DB there.
-- Owner should upgrade the tenancy to Pay-As-You-Go (+$1 budget alert): Always Free stays $0, but idle
-  trial-account instances can be reclaimed (our VM is idle most of the day).
-
-## Phase 9 (Analytics + runner) — as built
-
-- `report` stage (`src/analytics/`): per platform collectors → `metrics` (one row per post per UTC day, replaced on
-  re-run). YouTube: `videos.list` statistics + YouTube Analytics `reports` (avg view duration/percentage, shares;
-  1–2 days lag; failure keeps counts). IG `/{media}/insights` (views, likes, comments, shares, avg watch; fallback
-  metric set), FB `/{video}/video_insights` — both mock-only. Weekly report (`report.weekly_text`) on
-  `analytics.report_weekday` (Monday) once per ISO week (`control.weekly_report_week`), `report --weekly` or
-  Telegram `/report` sends now.
-- Feedback: `report.winners` = top 3 last-7-day videos with views. `ranking.winner_boost` (0.15) multiplies pick
-  scores for winners' categories (`rank.pick(boost=)`); script prompt gets `{{winners}}` few-shot of winning hook
-  titles (`write_script(winners=)`). Both empty until there's data.
-- Runner: `src/service.py` writes launchd agents (`com.raij.bot` KeepAlive, `com.raij.daily` calendar,
-  `com.raij.publish` interval) with absolute uv path and Homebrew PATH. `src/lock.py` flock locks: `publish` and
-  `run-daily` never overlap themselves (a busy publish returns 0). SQLite `timeout=30` for the shared DB.
-  `run-daily` counts non-zero stage exits as problems and sends one Telegram notice.
+1. First unattended daily run: tomorrow ~07:00 Cairo (first tick after 07:00). Watch that run's log: Gemini quota,
+   edge-tts from GitHub IPs, render time.
+2. **Owner: Meta keys** — paste App ID, App Secret, short-lived token → exchange → add to .env →
+   `grep -vE '^(RAIJ_STATE_KEY)=' .env | gh secret set RAIJ_ENV -R Wael9912/raij`. #20 #21 #23 still owe IG/FB until
+   ≈2026-09-25 14:37 UTC.
+3. Later: YouTube Data API key (discovery), Pixabay key, CC0 music.
 
 ## Phase 8 (Publish) — as built
 
