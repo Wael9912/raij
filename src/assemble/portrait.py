@@ -26,7 +26,8 @@ log = logging.getLogger("raij.assemble")
 
 WIKI_API = "https://en.wikipedia.org/w/api.php"
 # Wikimedia asks API clients for a descriptive User-Agent.
-UA = {"User-Agent": "raij/0.1 (Arabic news shorts; licensed Commons photos with attribution)"}
+# Wikimedia's policy wants a contact in the UA — without a URL/email the API answers 403 (seen live 2026-09-23).
+UA = {"User-Agent": "raij/0.1 (https://github.com/Wael9912/raij; Arabic video channel; licensed Commons photos with attribution)"}
 FREE = re.compile(r"^(public domain|pd\b.*|cc0.*|cc by(-sa)? [\d.]+.*)$", re.I)
 W, H = 1080, 1920
 
@@ -89,18 +90,22 @@ def download(cfg: Config, client: httpx.Client, photo: Photo) -> Photo:
     return photo
 
 
-def compose(src: Path, credit: str, out: Path) -> Path:
-    """1080×1920 frame: the photo, uncropped, over a blurred darkened fill of itself, with the credit
-    in small type near the top (clear of the subtitle band)."""
+def compose(src: Path, credit: str, out: Path, frame: tuple[int, int] = (W, H)) -> Path:
+    """Full frame (portrait or landscape): the photo, uncropped, over a blurred darkened fill of itself, with
+    the credit in small type near the top (clear of the subtitle band)."""
+    W, H = frame                                            # noqa: N806
     img = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
     bg = ImageOps.fit(img, (W, H)).filter(ImageFilter.GaussianBlur(40))
     bg = ImageEnhance.Brightness(bg).enhance(0.55)
-    fg = ImageOps.contain(img, (980, 1150))
-    bg.paste(fg, ((W - fg.width) // 2, 140 + (1150 - fg.height) // 2))
+    box = (980, 1150) if H > W else (int(W * 0.8), int(H * 0.72))
+    fg = ImageOps.contain(img, box)
+    top = 140 if H > W else int(H * 0.14)
+    bg.paste(fg, ((W - fg.width) // 2, top + (box[1] - fg.height) // 2))
     d = ImageDraw.Draw(bg)
     font = brand.font(26, weight=700)
     text = credit if font.getlength(credit) <= W - 60 else credit[:90] + "…"
-    d.text((W / 2, 100), text, font=font, fill=(235, 235, 235), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0))
+    d.text((W / 2, 100 if H > W else 60), text, font=font, fill=(235, 235, 235), anchor="mm", stroke_width=2,
+           stroke_fill=(0, 0, 0))
     out.parent.mkdir(parents=True, exist_ok=True)
     bg.save(out, quality=92)
     return out

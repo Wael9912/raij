@@ -19,12 +19,17 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 6.5 Visual polish | ✅ done | `398a58c` | Cairo Black via raqm, xfade transitions, hook title + series badge, logo, progress bar. #13/#17/#19 re-rendered as #20/#21/#22 → **awaiting owner re-approval** |
 | 8 Publish | 🟡 YouTube + TikTok live | `191dbef` | 2026-09-22: #20 #21 #23 live as public Shorts on channel رائج (UCeLlvJwQe-uj4IEZEsO3YIw), processed OK, not locked to private; TikTok exported. **IG/FB not run live** — Meta keys pending |
 | 9 Analytics + runner | ✅ done | `096c920` | live: YouTube metrics for 3 Shorts, weekly report sent; launchd bot/daily/publish installed and running. IG/FB insights mock-only |
+| 13 Pick + produce from the bot | ✅ done | (this commit) | `/trending` pick list → format + platforms → `produce` job; `/topic`, `/script`, `/run`, `/jobs`; Wikipedia top-views source; manual picks outside the daily quota |
+| 15 Long-form | ✅ done | (this commit) | `long` format: 1920×1080, 2–5 min, chapters (cards + YouTube timestamps), thumbnail, calmer voice; live: #30 «gold» 3 min from a /topic. `ranking.long_top_n` = 1 automatic long/day |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
 Missing: YouTube API key (discovery), Reddit, Groq, Pixabay, Meta. YouTube OAuth ✅ (`data/youtube.token.json`; re-auth
 pending for the Phase 12 playlist scope).
-**Runs on GitHub Actions** (`.github/workflows/raij.yml`, `tick` command); Mac launchd services are uninstalled
-(`install-services` still exists for a fallback). Never run a second Telegram poller (two pollers fight over getUpdates).
+**Runs on the owner's Mac again since 2026-09-23 17:47 Cairo** (launchd: `com.raij.bot` always on, `com.raij.daily`
+07:00, `com.raij.publish` every 30 min — `install-services`). GitHub Actions is the *fallback* only: workflow is
+dispatch-only (no cron), Cloudflare Worker cron paused, `RAIJ_ENABLED` should be `false` (the auto-mode classifier
+blocked `gh variable set` — owner runs it). Never run a second Telegram poller (two pollers fight over getUpdates).
+"check" = `uv run python -m src.main services`, `tail data/logs/{bot,daily,publish,jobs}.log`, and the DB.
 Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** — subtitles are drawn in Python instead.
 `libraqm` is installed via Homebrew (Arabic shaping for Pillow, see `src/textshape.py`).
 
@@ -33,6 +38,10 @@ Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext**
 ```bash
 uv run pytest -q                              # all tests (mocked network; must stay offline)
 uv run python -m src.main <cmd> [--dry-run]   # discover | rank | extract | ... | run-daily | pause | resume
+uv run python -m src.main trending            # discover + screen, then a Telegram pick list (no auto-selection)
+uv run python -m src.main topic "…" [--long|--both] [--platforms youtube,tiktok_export]   # then `produce`
+uv run python -m src.main from-script FILE    # voice an owner-written script as written; then `produce`
+uv run python -m src.main produce             # extract → script → voice → assemble → review for everything selected
 sqlite3 data/pipeline.db "select source, status, count(*) from candidates group by 1,2;"
 ```
 
@@ -219,9 +228,68 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   + "…" (never a third over the subtitles); `clean_title` needs an Arabic letter and rejects a title equal to the
   spoken hook. Subtitles cope with a voice of zero words. Rank day = Cairo day (see Decisions).
 
+- **Phase 13 + 15 (2026-09-23, owner's ask: "get back to my device", more videos, trigger production from the bot,
+  shorts *and* long videos up to 5 min, pick topics + where to post, give a topic or a script):**
+  - **Formats** (`src/formats.py`, config `formats:`): `short` = the classic 1080×1920 ≤60 s; `long` = **1920×1080**,
+    240–520 words at `+0%` (≈2.2–4.7 min), `max_seconds` 300, cut every 8 s. Landscape on purpose: YouTube files any
+    vertical video ≤3 min as a Short. `scripts.kind` carries it; voice/assemble/publish read the format from the
+    script (legacy `script.*/voice.*/video.*` keys still define `short`).
+  - **`candidates.wanted`** (JSON: formats, platforms, kind trend|topic|script, text, by owner|auto) = the ask.
+    `formats.wanted_platforms()` → `publish.wanted_platforms()` (long → `publish.long_platforms`, YouTube + TikTok
+    export; Reels APIs cap at 90 s). Owner picks (`by: owner`) don't count against `ranking.top_n` (8 now);
+    `ranking.long_top_n` (1) of the automatic picks also gets a long version (`rank.pick_long`: evergreen, fit,
+    explainer/list/story).
+  - **Long script** (`script_write_long.txt`): hook → 3–6 sections, each opening on a beat with `chapter` (2–5
+    words) → payoff → cta; `validate(kind="long")` needs ≥2 chapter beats. Extract reads more for long
+    (`extract.long_articles` 6, plus a news search) and asks the card for 8–14 facts (`{{depth}}`).
+  - **Assemble**: `subtitles.Style.for_frame`, `brand.endcard/hook_sequence(frame=)`, `portrait.compose(frame=)`,
+    `render.Plan(width, height, max_seconds, overlays)`; **chapter cards** (`brand.chapter_sequence`, yellow pill
+    top-centre 3 s at each chapter; `videos.notes.chapters` = [{at, title}], "المقدمة" at 0:00); **thumbnail**
+    (`assemble/thumbnail.py`: frames from the *clean stock clips* — the finished render carries subtitles/logo and
+    mid-xfade blends — scored on brightness/contrast/edges, title + series + logo, 1280×720 JPEG ≤2 MB, only for
+    long); b-roll searched in the frame's orientation, **Pexels photos as the fallback** when no faceless clip
+    matches (`video.photo_fallback`, Ken Burns via the existing still path, provider `pexels-photo`, .jpg in
+    assets/stock); faces: landscape uses `faces.MIN_AREA_WIDE` 0.5 % (1.5 % let crowd shots with clear faces through
+    on the first live long render).
+  - **Publish**: long → regular upload (`youtu.be/<id>`), description = caption + chapter timestamps
+    (`common.chapter_lines`: first 00:00, ≥3, ≥10 s apart), no "#Shorts"; `youtube.set_thumbnail` (50 units, best
+    effort; the channel may need phone verification once). Cards show `🎬 #id · 4:32 · series · 🎬 Long`.
+  - **Bot production** (`review/picks.py`, `src/jobs.py`): `/trending` queues the `trending` job (discover + screen
+    with `rank(select=False)`, then a numbered list with ☑ buttons `pk:n`, ➡️ Next → format `pf:i` + platform `pp:i`
+    toggles → 🚀 Make `pg` / ✖ `px` / ⬅️ `pb`; one flow at a time in `control.pick_flow`, 12 h TTL, every tap edits
+    the same message). `/topic <text>` and `/script <text>` go straight to the options step (script: format from the
+    word count, ≤115 → short, ≤520 → long). 🚀 → `picks.commit` (trending items → `selected` + wanted; topic/script →
+    `discover/manual.py` candidate, source `manual`) and queues `produce`. `/run` queues `run-daily`; `/jobs` shows the
+    running/queued job + the tail of `data/logs/jobs.log`. Jobs are detached `python -m src.main <cmd>` children
+    started by the bot's maintenance pass (`poll(maintenance=)`, also hourly reminders); `run-daily`, `produce` and
+    `trending` share the `pipeline` file lock; on Actions `tick` runs the queue inline. `produce` loops up to 3 rounds
+    while new picks appear.
+  - **Manual research** (`discover/manual.py`): Bing News RSS (publisher URLs in `url=`) with the topic reduced to
+    content words (`keywords()`), Google News RSS only for headlines (its links are JS interstitials — the first live
+    run read nothing and built a card from an off-topic Wikipedia hit about Yemen); Wikipedia extract only when the
+    title names the topic (`relevant()`), descriptive UA; distill prompt: "off-topic → usable: false", plus
+    `category` for manual items. A re-sent topic/script is a new row (`:2`) unless the first is still in progress.
+    Owner scripts: extract builds the card from the text itself (no LLM), `write.segment_script` splits it into beats
+    verbatim (`same_text` ≥ 0.9, one retry; an edit note allows rewording), no fact/similarity gate.
+  - **Wikipedia source** (`discover/wikipedia.py`, `discovery.wikipedia`): yesterday's top-40 viewed ar.wikipedia
+    articles (Wikimedia REST, keyless); extract reads the article extract + news about it.
+  - Extract's own client gets a 150 s read timeout (a long-form card timed out at 20 s on a busy free model).
+  - Repo survey (2026-09-23, 18 repos — MoneyPrinterTurbo, OpenMontage, purffle-shorts, ai-marketing-factory,
+    hadi-hani/arabic-shorts-generator …): taken = landscape + 3-min rule, chapters in the description, frame-scored
+    thumbnails, photo fallback with Ken Burns, keyword-reduced search, Wikipedia pageviews as a trend source, jobs
+    queue. Not taken (yet): libass karaoke captions (no libass here), CC-BY music pools (needs credits + the owner's
+    pick), Gemini TTS as an alternate voice (free tier exists; owner chose no fallback voice), tashkeel for TTS,
+    upload-post.com for TikTok (TikTok's direct API stays private-only until audited).
+
 ## Next up
 
-**Live on GitHub Actions since 2026-09-22 19:07 Cairo** (repo Wael9912/raij, public; Mac services uninstalled).
+**Runs on the owner's Mac (launchd) since 2026-09-23 17:47 Cairo.** GitHub Actions (repo Wael9912/raij) is the
+fallback: workflow dispatch-only, Worker cron paused (`deploy/cloudflare-trigger/wrangler.toml` `crons = []`).
+Going hosted again = `gh workflow run raij.yml -f command=tick -f export_state=true` is *not* the direction; instead:
+pack the Mac state (`state pack state.enc` → `gh release upload state-bootstrap state.enc --clobber`), uninstall the
+Mac services, restore both crons, set `RAIJ_ENABLED=true`.
+
+**Old hosted setup (kept for the fallback):** live on GitHub Actions 2026-09-22 → 2026-09-23 (repo Wael9912/raij, public).
 "check" now = `gh run list -R Wael9912/raij --workflow raij.yml` + `gh run view <id> --log`; the live DB is in the
 Actions cache — to inspect it: download the newest cache isn't possible via gh, so run with `workflow_dispatch`
 and read the log, or use the weekly encrypted backup from Telegram (`state unpack` with RAIJ_STATE_KEY from .env).
@@ -247,19 +315,21 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 | 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths + authenticated bundle, S3 id regex/size cap, S4 owner id/reply check/expiry, S5–S8; `db.start_run/finish_run`; 20 new tests | ✅ 2026-09-23 |
 | 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, 48/72 h reminders (warn only), retry button, setMyCommands, per-video pending edit, /approve_all + /skip with confirm | ✅ 2026-09-23 |
 | 12 | Content I (owner: D1 tech/money/wow-facts/life-hack + tools, D2 Gulf-first, D3 MSA + `ar-SA-HamedNeural`, D4 tools series): niche/region/fit weights, round-robin screen, ad-safe gate, Gulf feeds, posting windows, SEO title/description/tags, playlists, CTA rotation, A/B titles | ✅ 2026-09-23 (playlists need owner re-auth) |
-| 13 | Pick-before-render via Telegram; real series (templates, quotas, evergreen source) | ⬜ next |
-| 14 | Topic performance memory, traffic-source metrics, `tools`/affiliate series, second brand | ⬜ |
-| 15 | >60 s variants for TikTok/FB, weekly long-form compile | ⬜ |
+| 13 | Pick-before-render via Telegram (`/trending` → pick → format → platforms → make), `/topic`, `/script`, `/run`, `/jobs`, jobs queue, Wikipedia source | ✅ 2026-09-23 |
+| 15 | Long format (landscape 2–5 min, chapters, thumbnail), per-format script/voice/render/publish, automatic 1 long/day | ✅ 2026-09-23 (live: #30 from /topic) |
+| 14 | Topic performance memory, traffic-source metrics, `tools`/affiliate series, second brand; real series objects (templates, quotas, evergreen backlog) from the old 13 | ⬜ next |
+| 16 | Music: CC-BY/CC0 pool by mood with credits (assets/music is empty — long videos are voice-only); libass-free karaoke polish; weekly compile of the week's Shorts | ⬜ |
 
 Still pending from before:
-0. **Owner: YouTube re-auth for playlists** — on the Mac `uv run python -m src.main youtube-auth` (new `youtube` scope),
-   then `gh secret set RAIJ_YOUTUBE_TOKEN -R Wael9912/raij < data/youtube.token.json`. Until then Shorts upload fine
-   and the playlist step logs "lacks the `youtube` scope".
-1. **Owner: Meta keys** — paste App ID, App Secret, short-lived token → exchange → add to .env →
-   `grep -vE '^(RAIJ_STATE_KEY)=' .env | gh secret set RAIJ_ENV -R Wael9912/raij`. IG/FB start with the first videos
-   approved after the keys exist (#20 #21 #23 were closed as `published` on 2026-09-23, owner's call).
-2. Watch the first unattended daily run's log: Gemini quota, edge-tts from GitHub IPs, render time.
-3. Later: YouTube Data API key (discovery), Pixabay key, CC0 music.
+0. **Owner: `! gh variable set RAIJ_ENABLED --body false -R Wael9912/raij`** (blocked for Claude by the auto-mode
+   classifier; the workflow has no cron anymore, so this is belt-and-braces).
+1. **Owner: YouTube re-auth for playlists** — `uv run python -m src.main youtube-auth` (new `youtube` scope; the token
+   file is local now, no secret to update while on the Mac). Until then Shorts upload fine, playlists log a hint.
+2. **Owner: Meta keys** — paste App ID, App Secret, short-lived token → exchange → add to .env. IG/FB start with the
+   first videos approved after the keys exist.
+3. Watch the first Mac daily run (07:00 Cairo, `data/logs/daily.log`): Gemini quota with top_n 8 + 1 long
+   (≈ 3 screen + 9 cards + 10 scripts ≈ 22 calls/day across the model chain), render time on this Mac.
+4. Later: YouTube Data API key (discovery), Pixabay key, music pool.
 
 ## Phase 8 (Publish) — as built
 

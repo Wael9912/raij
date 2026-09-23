@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from src import db, llm
+from src import db, formats, llm
 from src.analytics.report import winner_boost
 from src.config import Config
 from src.rank.retellability import classify
@@ -138,8 +138,45 @@ def pick(rows: list[dict[str, Any]], need: int, categories: set[str], max_per_ca
     return chosen
 
 
+def shortlist(cfg: Config, conn: sqlite3.Connection, n: int | None = None, day: str | None = None) -> list[dict[str, Any]]:
+    """The best screened, unselected items for the owner to pick from in Telegram (Phase 13): retellable, ad-safe,
+    in the niche or the labelled-only categories, one per topic, weighted like `pick()`."""
+    n = int(n or cfg.get("ranking.shortlist", 12))
+    window = cfg.get("ranking.window_hours", 48)
+    day = day or datetime.now(ZoneInfo(cfg.get("schedule.timezone", "Africa/Cairo"))).strftime("%Y-%m-%d")
+    cats = set(cfg.get("ranking.categories", [])) | set(cfg.get("ranking.other_categories", []))
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM candidates WHERE status = 'ranked' AND retellable = 1 AND coalesce(ad_safe, 1) = 1 "
+        "AND last_seen_at >= datetime('now', ?) ORDER BY score DESC", (f"-{int(window)} hours",))]
+    taken = {r["topic"] for r in _selected_today(conn, day) if r.get("topic")}
+    weights, boost = Weights(cfg), winner_boost(conn, cfg.get("ranking.winner_boost", 0.15))
+    out, topics = [], set()
+    for r in sorted(rows, key=lambda r: (r["score"] or 0) * boost.get(r["category"], 1.0) * weights.factor(r),
+                    reverse=True):
+        if r["category"] not in cats or (r.get("topic") and (r["topic"] in topics or r["topic"] in taken)):
+            continue
+        if r.get("topic"):
+            topics.add(r["topic"])
+        out.append(r)
+        if len(out) >= n:
+            break
+    return out
+
+
+def pick_long(rows: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+    """Which of today's automatic picks also get a long version: evergreen explainers/lists/stories the audience
+    cares about most (Phase 15, `ranking.long_top_n`)."""
+    if n <= 0:
+        return []
+    good = [r for r in rows if not formats.is_manual(r)]
+    good.sort(key=lambda r: (int(bool(r.get("evergreen"))), int(r.get("audience_fit") or 3),
+                             r.get("format") in ("explainer", "list", "story"), r.get("score") or 0), reverse=True)
+    return good[:n]
+
+
 def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
-         client: httpx.Client | None = None, out_dir: Path | None = None) -> int:
+         client: httpx.Client | None = None, out_dir: Path | None = None, select: bool = True) -> int:
+    """`select=False` (the bot's /trending) scores and screens but leaves the choosing to the owner."""
     top_n = cfg.get("ranking.top_n", 5)
     window = cfg.get("ranking.window_hours", 48)
     pool_size = cfg.get("ranking.classify_pool", 30)
@@ -156,7 +193,9 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
     by_id = {r["id"]: r for r in rows}
     to_check = screen_pool(scored, by_id, pool_size)
     already = _selected_today(conn, day)
-    need = max(top_n - len(already), 0)
+    # The owner's own picks (bot) come on top of the automatic quota — they don't eat into it.
+    auto_already = [r for r in already if not formats.is_manual(r)]
+    need = max(top_n - len(auto_already), 0) if select else 0
 
     if dry_run:
         log.info("[dry run] %d candidates in the last %dh; %d already selected today, need %d",
@@ -177,7 +216,7 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
 
     notes: dict[str, Any] = {"pool": len(rows), "screened": 0}
     status = "ok"
-    if need and to_check:
+    if (need or not select) and to_check:
         try:
             verdicts = classify(cfg, to_check, batch_size=cfg.get("ranking.batch_size", 15), client=client)
         except llm.LLMError as exc:
@@ -215,6 +254,14 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
     for r in chosen:
         conn.execute("UPDATE candidates SET status = 'selected', selected_at = ? WHERE id = ?", (stamp, r["id"]))
         r.update(status="selected", selected_at=stamp)
+    # One (ranking.long_top_n) of today's automatic picks also gets a 2–5 min version, unless one exists today.
+    long_have = sum(1 for r in auto_already if "long" in formats.wanted_formats(r))
+    for r in pick_long(chosen, int(cfg.get("ranking.long_top_n", 0)) - long_have):
+        brand = (cfg.brands or [{}])[0]
+        wanted = formats.encode(["short", "long"], list(brand.get("platforms") or []), kind="trend", by="auto")
+        conn.execute("UPDATE candidates SET wanted = ? WHERE id = ?", (wanted, r["id"]))
+        r["wanted"] = wanted
+        log.info("#%d also gets a long version (%s, fit %s)", r["id"], r.get("format"), r.get("audience_fit"))
 
     selected = already + chosen
     parts = {s.id: s.parts for s in scored}
@@ -224,7 +271,7 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
         "selected": [_entry(r, parts.get(r["id"])) for r in selected],
         "flagged": [_entry(r) for r in sorted(flagged, key=lambda r: r["score"] or 0, reverse=True)],
     }
-    if status == "ok" and len(selected) < top_n:
+    if status == "ok" and select and len(selected) < top_n:
         status = "partial"
     notes.update(selected=len(selected), flagged=len(flagged))
     db.finish_run(conn, run_id, status, notes)
@@ -234,7 +281,7 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
     (out_dir / f"{day}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     log.info("Rank report written to %s", out_dir / f"{day}.json")   # not printed: the Actions log is public (S5)
 
-    level = logging.INFO if len(selected) >= top_n else logging.WARNING
+    level = logging.INFO if len(selected) >= top_n or not select else logging.WARNING
     log.log(level, "Rank %s: %d/%d selected today, %d screened this run, %d flagged",
             status, len(selected), top_n, notes["screened"], len(flagged))
     return 1 if status == "failed" else 0

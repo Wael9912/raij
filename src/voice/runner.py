@@ -17,7 +17,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from src import db
+from src import db, formats
 from src.config import Config
 from src.voice import tts
 from src.voice.tts import RunCmd, VoiceError
@@ -50,8 +50,10 @@ def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path, synth=tts.s
     re-voice use another voice without overwriting the first take."""
     brand = _brand(cfg, script["brand_id"])
     v = brand.get("voice") or {}
-    voice, rate, pitch = voice_name or v.get("name", "ar-EG-ShakirNeural"), v.get("rate", "+0%"), v.get("pitch", "+0Hz")
-    max_s, min_s = cfg.get("voice.max_seconds", 58), cfg.get("voice.min_seconds", 40)
+    fmt = formats.get(cfg, script.get("kind"))
+    voice, pitch = voice_name or v.get("name", "ar-EG-ShakirNeural"), v.get("pitch", "+0Hz")
+    rate = fmt.voice_rate or v.get("rate", "+0%")           # long videos are paced calmer (formats.long.voice_rate)
+    max_s, min_s = fmt.voice_max, fmt.voice_min
     beats = json.loads(script["beats"])
     text = tts.speech_text(beats)
     wav = out_dir / f"{stem or script['id']}.wav"
@@ -79,7 +81,7 @@ def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path, synth=tts.s
                                       "words": [asdict(w) for w in words], "beats": spans},
                                      ensure_ascii=False, indent=1), encoding="utf-8")
     notes = {"voice": voice, "rate": rate, "lufs": loud.get("output_i"), "true_peak": loud.get("output_tp"),
-             "words": len(words), "script_words": len(script["body_ar"].split())}
+             "words": len(words), "script_words": len(script["body_ar"].split()), "kind": fmt.kind}
     if seconds < min_s:
         notes["warning"] = f"short: {seconds:.1f}s < {min_s}s"
     return {"voice_path": str(wav.relative_to(cfg.root)), "duration_s": seconds, "notes": notes}
@@ -98,7 +100,8 @@ def voice(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, synth=tt
     if dry_run:
         log.info("[dry run] %d passed script(s) need a voiceover → %s", len(pending), out_dir)
         for s in pending:
-            log.info("[dry run] script %d (%s): %d words", s["id"], s["brand_id"], len(s["body_ar"].split()))
+            log.info("[dry run] script %d (%s, %s): %d words", s["id"], s["brand_id"], s.get("kind") or "short",
+                     len(s["body_ar"].split()))
         log.info("[dry run] no synthesis, nothing written")
         return 0
 

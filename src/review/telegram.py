@@ -75,6 +75,10 @@ class Bot:
         return self.call("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
                          reply_markup=reply_markup or {"inline_keyboard": []})
 
+    def edit_text(self, chat_id: str, message_id: int, text: str, reply_markup: dict | None = None, **kw: Any) -> Any:
+        return self.call("editMessageText", chat_id=chat_id, message_id=message_id, text=text[:MAX_MESSAGE],
+                         reply_markup=reply_markup, **kw)
+
     def edit_caption(self, chat_id: str, message_id: int, caption: str, reply_markup: dict | None = None) -> Any:
         return self.call("editMessageCaption", chat_id=chat_id, message_id=message_id,
                          caption=caption[:MAX_CAPTION], reply_markup=reply_markup)

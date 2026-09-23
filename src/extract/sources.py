@@ -17,8 +17,10 @@ from typing import Any, Callable
 import httpx
 import trafilatura
 
+from src import formats
 from src.config import Config
 from src.discover.common import FetchError, request
+from src.discover.manual import news_search, wikipedia_extract
 
 log = logging.getLogger("raij.extract")
 # trafilatura logs every page it can't parse at ERROR/WARNING; we report failures ourselves.
@@ -70,11 +72,41 @@ def _from_rss(cfg: Config, client: httpx.Client, row: dict[str, Any], raw: dict[
     return SourceText(f"{row['title'] or ''}\n\n{summary}".strip(), "summary", [url])
 
 
-def _from_trends(cfg: Config, client: httpx.Client, row: dict[str, Any], raw: dict[str, Any]) -> SourceText:
+def max_articles(cfg: Config, row: dict[str, Any]) -> int:
+    """More reading when a long video is wanted: a 4-minute script needs more than 3–5 facts."""
+    if "long" in formats.wanted_formats(row):
+        return int(cfg.get("extract.long_articles", 6))
+    return int(cfg.get("extract.max_articles", 3))
+
+
+def _read_articles(cfg: Config, client: httpx.Client, items: list[dict[str, Any]], limit: int,
+                   skip: set[str] | None = None) -> tuple[list[str], list[str], list[str]]:
+    """Fetch up to `limit` readable articles from [{title, url, source}]: (parts, urls, errors)."""
     min_chars = cfg.get("extract.min_article_chars", 400)
     parts, urls, errors = [], [], []
+    for item in items:
+        if len(urls) >= limit:
+            break
+        if not item.get("url") or item["url"] in (skip or set()) or item.get("readable") is False:
+            continue
+        try:
+            text = article_text(client, item["url"])
+        except FetchError as exc:
+            errors.append(str(exc))
+            continue
+        if len(text) < min_chars:
+            continue
+        parts.append(f"[{item.get('source') or 'source'}] {item.get('title') or ''}\n{text}")
+        urls.append(item["url"])
+    return parts, urls, errors
+
+
+def _from_trends(cfg: Config, client: httpx.Client, row: dict[str, Any], raw: dict[str, Any]) -> SourceText:
+    min_chars = cfg.get("extract.min_article_chars", 400)
+    limit = max_articles(cfg, row)
+    parts, urls, errors = [], [], []
     for item in raw.get("news") or []:
-        if len(urls) >= cfg.get("extract.max_articles", 3):
+        if len(urls) >= limit:
             break
         if not item.get("url"):
             continue
@@ -89,6 +121,12 @@ def _from_trends(cfg: Config, client: httpx.Client, row: dict[str, Any], raw: di
         urls.append(item["url"])
     if errors:
         log.warning("Trends #%s: %d article fetch(es) failed: %s", row["id"], len(errors), "; ".join(errors))
+    if parts and len(urls) < limit and "long" in formats.wanted_formats(row):
+        # A long video wants depth the trend's 2–3 linked articles rarely give: search the news for more.
+        more, more_urls, _ = _read_articles(cfg, client, news_search(client, row["title"] or ""), limit - len(urls),
+                                            skip=set(urls))
+        parts += more
+        urls += more_urls
     if parts:
         return SourceText("\n\n---\n\n".join(parts), "news", urls)
     # No article was readable; headlines alone are thin, but name the story.
@@ -192,7 +230,44 @@ def _from_youtube(cfg: Config, client: httpx.Client, row: dict[str, Any], raw: d
     return SourceText(text, "whisper", [url])
 
 
-ROUTES = {"rss": _from_rss, "trends": _from_trends, "reddit": _from_reddit, "youtube": _from_youtube}
+def _from_wiki(cfg: Config, client: httpx.Client, row: dict[str, Any], raw: dict[str, Any]) -> SourceText:
+    """The Wikipedia article itself (plain-text extract), plus recent news about it when there is any."""
+    got = wikipedia_extract(client, row["title"] or "", max_chars=cfg.get("extract.max_prompt_chars", 12000))
+    parts, urls = [], []
+    if got:
+        parts.append(f"[Wikipedia] {row['title']}\n{got[0]}")
+        urls.append(got[1] or row["canonical_url"])
+    news, news_urls, _ = _read_articles(cfg, client, news_search(client, row["title"] or "", limit=6),
+                                        max(1, max_articles(cfg, row) - 1))
+    parts += news
+    urls += news_urls
+    if not parts:
+        raise ExtractError("Wikipedia article unreadable and no news found")
+    return SourceText("\n\n---\n\n".join(parts), "wiki", urls or [row["canonical_url"]])
+
+
+def _from_manual(cfg: Config, client: httpx.Client, row: dict[str, Any], raw: dict[str, Any]) -> SourceText:
+    """An owner topic: recent news articles about it plus the Wikipedia background. (Owner *scripts* never get
+    here — extract turns them into a story card directly, see runner.)"""
+    topic = (formats.wanted(row).get("text") or row["title"] or "").strip()
+    items = news_search(client, topic, limit=12)
+    parts, urls, errors = _read_articles(cfg, client, items, max_articles(cfg, row))
+    got = wikipedia_extract(client, topic)
+    if got:
+        parts.append(f"[Wikipedia] {got[0]}")
+        urls.append(got[1])
+    if errors:
+        log.warning("Topic #%s: %d article fetch(es) failed", row["id"], len(errors))
+    if not parts:
+        heads = [f"[{n.get('source') or 'source'}] {n['title']}" for n in items if n.get("title")]
+        if not heads:
+            raise ExtractError(f"nothing found online about {topic!r}")
+        return SourceText("\n".join([f"Topic: {topic}"] + heads), "headlines", [n["url"] for n in items if n.get("url")])
+    return SourceText(f"Topic: {topic}\n\n" + "\n\n---\n\n".join(parts), "news", urls)
+
+
+ROUTES = {"rss": _from_rss, "trends": _from_trends, "reddit": _from_reddit, "youtube": _from_youtube,
+          "wiki": _from_wiki, "manual": _from_manual}
 
 
 def source_text(cfg: Config, client: httpx.Client, row: dict[str, Any], run: RunCmd = run_cmd) -> SourceText:

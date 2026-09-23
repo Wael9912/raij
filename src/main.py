@@ -61,9 +61,11 @@ def cmd_review(cfg, conn, args) -> int:
 
 
 def cmd_bot(cfg, conn, args) -> int:
-    """Long-running: handle review buttons and /pause /resume /status from Telegram."""
-    from src.review.bot import poll
-    from src.review.runner import make_bot
+    """Long-running: handle review buttons and commands from Telegram; between polls start queued production
+    jobs (src/jobs.py) and send the 48/72 h reminders once an hour."""
+    import time
+    from src.review.bot import ensure_commands, poll
+    from src.review.runner import make_bot, remind
     from src.review.telegram import TelegramError
     if args.dry_run:
         log.info("[dry run] would long-poll Telegram for review decisions (chat %s)",
@@ -74,9 +76,17 @@ def cmd_bot(cfg, conn, args) -> int:
     except TelegramError as exc:
         log.error("Telegram not configured: %s (see SETUP.md §4)", exc)
         return 1
+    ensure_commands(conn, bot)
+    last = {"remind": 0.0}
+
+    def maintenance() -> None:
+        if time.time() - last["remind"] > 3600:
+            last["remind"] = time.time()
+            remind(cfg, conn, bot, chat)
+
     log.info("Review bot listening — Ctrl+C to stop")
     try:
-        poll(cfg, conn, bot, chat)
+        poll(cfg, conn, bot, chat, maintenance=maintenance)
     except KeyboardInterrupt:
         log.info("Review bot stopped")
     return 0
@@ -175,6 +185,11 @@ def cmd_tick(cfg, conn, args) -> int:
             except Exception as exc:
                 log.error("Telegram pass failed: %s", exc)
                 code = 1
+            # No long-lived bot here: jobs the owner asked for (/trending, /topic, /run) run inside this tick.
+            from src import jobs
+            done = jobs.run_queued_inline(cfg, conn, lambda name: JOBS[name](cfg, conn, args))
+            if done:
+                log.info("Ran queued job(s): %s", ", ".join(done))
         code |= publish(cfg, conn, dry_run=args.dry_run)
     finally:
         # Whatever happened (A1): if the DB changed, the caller must save it, or the next tick replays the day
@@ -225,11 +240,128 @@ def cmd_init_db(cfg, conn, args) -> int:
     return 0
 
 
+PRODUCE_STAGES = ("extract", "script", "voice", "assemble", "review")
+
+
+def _notify_failures(cfg, failures: list[str], what: str) -> None:
+    try:
+        from src.review.runner import make_bot
+        bot, chat = make_bot(cfg)
+        bot.send_message(chat, f"⚠️ {what}: {', '.join(failures)} had problems — {log_hint()}")
+    except Exception as exc:
+        log.warning("Couldn't send the failure notice: %s", exc)
+
+
+def cmd_produce(cfg, conn, args) -> int:
+    """Make videos for everything already selected (the owner's picks, topics and scripts from the bot):
+    extract → script → voice → assemble → review. Loops while new selected work appears (a pick made during the
+    run), at most 3 rounds. Shares the `pipeline` lock with run-daily."""
+    from src.lock import Busy, single
+    failures: list[str] = []
+    try:
+        with single(cfg.root, "pipeline"):
+            seen: set[int] = set()
+            for _round in range(3):
+                selected = {r[0] for r in conn.execute("SELECT id FROM candidates WHERE status = 'selected'")}
+                pending = len(selected) + conn.execute("SELECT count(*) FROM candidates WHERE status = 'extracted'"
+                                                       ).fetchone()[0]
+                work = pending or conn.execute(
+                    "SELECT count(*) FROM scripts x WHERE x.status = 'passed' AND NOT EXISTS "
+                    "(SELECT 1 FROM videos v WHERE v.script_id = x.id)").fetchone()[0] or conn.execute(
+                    "SELECT count(*) FROM videos WHERE status IN ('voiced', 'rendered')").fetchone()[0]
+                if not work or (_round and not (selected - seen)):   # another round only for picks made meanwhile
+                    if not _round:
+                        log.info("Produce: nothing selected — nothing to make")
+                    break
+                seen |= selected
+                failures = []
+                for name in PRODUCE_STAGES:
+                    try:
+                        code = HANDLERS[name](cfg, conn, args)
+                    except Exception:
+                        log.exception("Stage '%s' failed; continuing", name)
+                        code = 1
+                    if code:
+                        failures.append(name)
+                if args.dry_run:
+                    break
+    except Busy as exc:
+        log.warning("produce skipped: %s (the running pipeline will pick the work up)", exc)
+        return 0
+    if failures and not args.dry_run:
+        _notify_failures(cfg, failures, "Producing your picks")
+    return 1 if failures else 0
+
+
+def cmd_trending(cfg, conn, args) -> int:
+    """Discover + screen (no automatic selection), then send the owner a pick list in Telegram (Phase 13)."""
+    from src.lock import Busy, single
+    from src.rank.runner import rank, shortlist
+    from src.review import picks
+    from src.review.runner import make_bot
+    try:
+        with single(cfg.root, "pipeline"):
+            code = cmd_discover(cfg, conn, args)
+            code |= rank(cfg, conn, dry_run=args.dry_run, select=False)
+    except Busy as exc:
+        log.warning("trending skipped: %s", exc)
+        return 0
+    items = shortlist(cfg, conn)
+    if args.dry_run:
+        log.info("[dry run] would offer %d item(s) to pick from", len(items))
+        for r in items:
+            log.info("[dry run] #%d %-9s %-10s fit %s  %s", r["id"], r["source"], r.get("category") or "?",
+                     r.get("audience_fit") or "?", (r["title"] or "")[:60])
+        return code
+    bot, chat = make_bot(cfg)
+    if not items:
+        bot.send_message(chat, "😶 Nothing new to pick from right now — the screen found no fresh retellable items. "
+                               "Try later, or /topic <something>.")
+        return code
+    flow = picks.new(cfg, "trend", items=items)
+    from src.publish.runner import PLATFORMS
+    missing = {name: check(cfg) for name, (check, _) in PLATFORMS.items()}
+    msg = bot.send_message(chat, picks.text(flow, missing), reply_markup=picks.keyboard(flow),
+                           disable_web_page_preview=True)
+    flow["msg"] = msg["message_id"]
+    picks.save(conn, flow)
+    log.info("Pick list sent: %d items", len(items))
+    return code
+
+
+def cmd_topic(cfg, conn, args) -> int:
+    """CLI twin of /topic: `topic "…" [--long] [--platforms youtube,tiktok_export]` then `produce`."""
+    from src.discover import manual
+    fmts = ["short", "long"] if getattr(args, "both", False) else (["long"] if getattr(args, "long", False) else ["short"])
+    plats = [p for p in (getattr(args, "platforms", None) or "").split(",") if p] or \
+        list((cfg.brands or [{}])[0].get("platforms") or [])
+    if args.dry_run:
+        log.info("[dry run] would add topic %r (%s) → %s", args.text, "+".join(fmts), ", ".join(plats))
+        return 0
+    cid = manual.add_topic(cfg, conn, args.text, fmts, plats)
+    log.info("Topic queued as candidate #%d (%s) — run `produce` to make it", cid, "+".join(fmts))
+    return 0
+
+
+def cmd_script_file(cfg, conn, args) -> int:
+    """CLI twin of /script: `from-script FILE [--platforms …]` — the file's text is voiced as written."""
+    from src.discover import manual
+    text = Path(args.file).read_text(encoding="utf-8")
+    plats = [p for p in (getattr(args, "platforms", None) or "").split(",") if p] or \
+        list((cfg.brands or [{}])[0].get("platforms") or [])
+    if args.dry_run:
+        log.info("[dry run] would add a %d-word script → %s", len(text.split()), ", ".join(plats))
+        return 0
+    cid, kind = manual.add_script(cfg, conn, text, plats)
+    log.info("Script queued as candidate #%d (%s) — run `produce` to make it", cid, kind)
+    return 0
+
+
 def cmd_run_daily(cfg, conn, args) -> int:
     """Chain all stages; one stage failing must not kill the rest. Failures are sent to Telegram."""
     from src.lock import Busy, single
     try:
-        with single(cfg.root, "run-daily"):
+        with single(cfg.root, "pipeline"):
             failures = []
             for name in STAGES:
                 if name == "publish" and db.publishing_paused(conn):
@@ -246,13 +378,12 @@ def cmd_run_daily(cfg, conn, args) -> int:
         log.warning("run-daily skipped: %s", exc)
         return 0
     if failures and not args.dry_run:
-        try:
-            from src.review.runner import make_bot
-            bot, chat = make_bot(cfg)
-            bot.send_message(chat, f"⚠️ Daily run: {', '.join(failures)} had problems — {log_hint()}")
-        except Exception as exc:
-            log.warning("Couldn't send the failure notice: %s", exc)
+        _notify_failures(cfg, failures, "Daily run")
     return 1 if failures else 0
+
+
+# Jobs the bot can queue (src/jobs.py) — run inline by `tick` on GitHub Actions.
+JOBS = {"trending": cmd_trending, "produce": cmd_produce, "run-daily": cmd_run_daily}
 
 
 def log_hint() -> str:
@@ -287,6 +418,11 @@ def build_parser() -> argparse.ArgumentParser:
         "init-db": ("Create/upgrade the SQLite schema", cmd_init_db),
         **{name: (help_, HANDLERS[name]) for name, help_ in STAGES.items()},
         "run-daily": ("Run every stage in order", cmd_run_daily),
+        "produce": ("Make videos for everything selected (owner picks, topics, scripts): extract → review",
+                    cmd_produce),
+        "trending": ("Discover + screen now and send a Telegram pick list (no automatic selection)", cmd_trending),
+        "topic": ("Queue a video about a topic (then `produce`)", cmd_topic),
+        "from-script": ("Queue an owner-written script file to voice and render (then `produce`)", cmd_script_file),
         "bot": ("Listen for Telegram review decisions (long-running)", cmd_bot),
         "youtube-auth": ("One-time Google consent for YouTube uploads", cmd_youtube_auth),
         "install-services": ("Run bot, daily pipeline and publishing in the background (launchd)",
@@ -305,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dry-run", action="store_true", help="Show what would happen; no side effects")
         p.set_defaults(func=func)
         if name == "discover":
-            p.add_argument("--source", action="append", choices=["youtube", "reddit", "trends", "rss"],
+            p.add_argument("--source", action="append", choices=["youtube", "reddit", "trends", "wiki", "rss"],
                            help="Only run this source (repeatable)")
         if name == "state":
             p.add_argument("action", choices=["pack", "unpack"])
@@ -313,6 +449,14 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--db-only", action="store_true", help="Pack the database only (no media)")
         if name == "report":
             p.add_argument("--weekly", action="store_true", help="Send the weekly report to Telegram now")
+        if name == "topic":
+            p.add_argument("text", help="What the video should be about (any language)")
+            p.add_argument("--long", action="store_true", help="Make a 2–5 min landscape video instead of a Short")
+            p.add_argument("--both", action="store_true", help="Make both a Short and a long video")
+            p.add_argument("--platforms", help="Comma-separated: youtube,instagram,facebook,tiktok_export")
+        if name == "from-script":
+            p.add_argument("file", help="UTF-8 text file with the script (≤115 words → Short, else Long)")
+            p.add_argument("--platforms", help="Comma-separated: youtube,instagram,facebook,tiktok_export")
     return parser
 
 

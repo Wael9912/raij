@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from src import db
+from src import db, formats
 from src.assemble.render import guard
 from src.config import Config
 from src.discover.common import FetchError, make_client
@@ -51,8 +51,8 @@ def eligible(conn: sqlite3.Connection, max_age_hours: float | None = None) -> li
     """Approved videos whose latest approve/reject decision is an approval of that same video id."""
     age = f"AND a.decided_at >= datetime('now', '-{float(max_age_hours)} hours')" if max_age_hours else ""
     rows = conn.execute(
-        "SELECT v.*, a.id AS approval_id, x.brand_id, x.beats, x.description_en, x.hashtags, "
-        "x.notes AS script_notes, s.sources, c.category "
+        "SELECT v.*, a.id AS approval_id, x.brand_id, x.kind, x.beats, x.description_en, x.hashtags, "
+        "x.notes AS script_notes, s.sources, c.category, c.wanted "
         "FROM videos v "
         "JOIN approvals a ON a.id = (SELECT max(id) FROM approvals WHERE video_id = v.id "
         "                            AND decision IN ('approved', 'rejected')) "
@@ -65,6 +65,18 @@ def eligible(conn: sqlite3.Connection, max_age_hours: float | None = None) -> li
 
 def _brand(cfg: Config, brand_id: str) -> dict[str, Any]:
     return next((b for b in cfg.brands if b["id"] == brand_id), {"id": brand_id})
+
+
+def wanted_platforms(cfg: Config, video: dict[str, Any], known: dict | None = None) -> list[str]:
+    """Where this video goes (Phase 13/15): the owner's pick for the item (`candidates.wanted`) or the brand's
+    list, minus platforms that can't take the format — `publish.long_platforms` for long videos (Reels caps),
+    and anything not in `known`."""
+    known = known or PLATFORMS
+    want = formats.wanted_platforms(video, _brand(cfg, video.get("brand_id") or ""))
+    if str(video.get("kind") or "short") == "long":
+        allowed = set(cfg.get("publish.long_platforms", ["youtube", "tiktok_export"]) or [])
+        want = [p for p in want if p in allowed]
+    return [p for p in want if p in known]
 
 
 def _post(conn: sqlite3.Connection, video: dict[str, Any], platform: str) -> dict[str, Any]:
@@ -152,8 +164,9 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
         for name, why in missing.items():
             log.info("[dry run] %s: %s", name, f"skipped — {why}" if why else "ready")
         for v in videos:
-            want = [p for p in _brand(cfg, v["brand_id"]).get("platforms", platforms) if p in platforms]
-            log.info("[dry run] video %d (approval %d) → %s", v["id"], v["approval_id"], ", ".join(want))
+            want = wanted_platforms(cfg, v, platforms)
+            log.info("[dry run] video %d (approval %d) → %s [%s]", v["id"], v["approval_id"],
+                     ", ".join(want) or "nowhere", v.get("kind") or "short")
         log.info("[dry run] nothing uploaded or written")
         return 0
 
@@ -172,7 +185,7 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                     continue
             path = guard(cfg, Path(v["video_path"]))           # only our own rendered output leaves the machine
             text = post_text(v, cfg)
-            want = [p for p in _brand(cfg, v["brand_id"]).get("platforms", list(platforms)) if p in platforms]
+            want = wanted_platforms(cfg, v, platforms)
             first = not windows.started(conn, v["id"])
             for name in want:
                 if missing[name]:
@@ -267,7 +280,7 @@ def finalize(cfg: Config, conn: sqlite3.Connection, max_age_hours: float | None,
     for v in eligible(conn):
         if v["id"] in fresh:
             continue
-        want = [p for p in _brand(cfg, v["brand_id"]).get("platforms", list(platforms)) if p in platforms]
+        want = wanted_platforms(cfg, v, platforms)
         posts = {r["platform"]: dict(r) for r in conn.execute("SELECT * FROM posts WHERE video_id = ?", (v["id"],))}
         done = [p for p in want if posts.get(p, {}).get("status") in DONE]
         pending = [p for p in want if p not in done and not missing[p]

@@ -9,13 +9,13 @@ import httpx
 
 from src import db
 from src.config import Config
-from src.discover import reddit, rss, trends, youtube
+from src.discover import reddit, rss, trends, wikipedia, youtube
 from src.discover.common import SourceResult, SourceSkipped, dedupe, make_client, upsert_candidates
 from src.discover.quota import QuotaBudget
 
 log = logging.getLogger("raij.discover")
 
-SOURCES = ("youtube", "reddit", "trends", "rss")
+SOURCES = ("youtube", "reddit", "trends", "wiki", "rss")
 DAILY_TARGET = 50
 
 
@@ -26,7 +26,7 @@ def _budget(cfg: Config, conn: sqlite3.Connection) -> QuotaBudget:
 def _fetch(name: str, cfg: Config, conn: sqlite3.Connection, client: httpx.Client) -> SourceResult:
     if name == "youtube":
         return youtube.fetch(cfg, client, _budget(cfg, conn))
-    return {"reddit": reddit, "trends": trends, "rss": rss}[name].fetch(cfg, client)
+    return {"reddit": reddit, "trends": trends, "rss": rss, "wiki": wikipedia}[name].fetch(cfg, client)
 
 
 def _plan(name: str, cfg: Config, conn: sqlite3.Connection) -> str:
@@ -41,12 +41,15 @@ def _plan(name: str, cfg: Config, conn: sqlite3.Connection) -> str:
         return f"top/day of {len(cfg.get('discovery.reddit.subreddits', []))} subreddits"
     if name == "trends":
         return f"trending RSS for {', '.join(cfg.get('discovery.trends.geos', []))}"
+    if name == "wiki":
+        return f"top {cfg.get('discovery.wikipedia.top', 40)} viewed {cfg.get('discovery.wikipedia.lang', 'ar')}.wikipedia articles"
     feeds = cfg.get("discovery.rss.feeds", []) or []
     return f"{len(feeds)} feed(s)" if feeds else "skip (no feeds configured)"
 
 
 def enabled_sources(cfg: Config, only: list[str] | None = None) -> list[str]:
-    names = only or [s for s in SOURCES if cfg.get(f"discovery.{s}.enabled", True)]
+    key = {"wiki": "wikipedia"}
+    names = only or [s for s in SOURCES if cfg.get(f"discovery.{key.get(s, s)}.enabled", True)]
     return [s for s in names if s in SOURCES]
 
 

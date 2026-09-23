@@ -66,6 +66,9 @@ def describe(row: dict[str, Any]) -> dict[str, Any]:
     elif row["source"] == "trends":
         item["note"] = "Google search trend; the title is only the search term"
         item["news_headlines"] = [n.get("title") for n in (raw.get("news") or []) if n.get("title")][:3]
+    elif row["source"] == "wiki":
+        item["note"] = "one of yesterday's most-viewed Arabic Wikipedia articles; the title is the article name"
+        item["views"] = row.get("views")
     else:
         item["feed"] = raw.get("feed")
         item["summary"] = _clean(raw.get("summary"), 300)

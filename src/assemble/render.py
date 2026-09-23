@@ -1,4 +1,5 @@
-"""Render the final 1080×1920 video with ffmpeg: b-roll segments joined by xfade transitions → end card,
+"""Render the final video (1080×1920 Shorts or 1920×1080 long-form, `Plan.width/height`) with ffmpeg: b-roll
+segments joined by xfade transitions → end card,
 then overlays (subtitles, animated hook title, channel logo, progress bar); voice plus optional CC0
 music ducked under it.
 
@@ -16,7 +17,7 @@ from typing import Callable
 from src.config import ALLOWED_MEDIA_SUBDIRS, Config
 
 RunCmd = Callable[[list[str]], subprocess.CompletedProcess]
-W, H, FPS = 1080, 1920, 30
+W, H, FPS = 1080, 1920, 30                # the Shorts frame; long videos pass their own size in the Plan
 STILL_EXT = {".jpg", ".jpeg", ".png"}
 # Varied per cut, in order; the cut into the end card is always a plain fade.
 LOGO_XY = (48, 150)                       # top-left, below the platforms' top bar
@@ -64,6 +65,11 @@ class Plan:
     logo: Path | None = None              # full-frame PNG with the channel logo, hidden on the end card
     transition: float = 0.3               # seconds of overlap per cut; 0 = hard cuts
     progress_bar: bool = True
+    width: int = W
+    height: int = H
+    max_seconds: float = 60.0             # the format's cap (formats.Format.max_seconds)
+    overlays: list[Path] = field(default_factory=list)   # more full-frame ffconcat PNG lists (chapter cards)
+    logo_xy: tuple[int, int] = LOGO_XY
     extra: dict = field(default_factory=dict)
 
     @property
@@ -86,6 +92,7 @@ def segments_for(beats: list[dict], clips_per_beat: list[list[Path]], voice_seco
 
 def command(cfg: Config, plan: Plan) -> list[str]:
     ffmpeg = cfg.secret("FFMPEG_BIN", "ffmpeg")
+    W, H = plan.width, plan.height        # noqa: N806 — frame size of this render
     inputs: list[str] = []
     filters: list[str] = []
     labels: list[str] = []
@@ -135,10 +142,16 @@ def command(cfg: Config, plan: Plan) -> list[str]:
         filters.append(f"[{n}:v]format=rgba[hook]")
         filters.append(f"{top}[hook]overlay=0:0:eof_action=pass[o1]")
         n, top = n + 1, "[o1]"
+    for k, lst in enumerate(plan.overlays):
+        guard(cfg, lst.parent)
+        inputs += ["-f", "concat", "-safe", "0", "-i", str(lst)]
+        filters.append(f"[{n}:v]format=rgba[ov{k}]")
+        filters.append(f"{top}[ov{k}]overlay=0:0:eof_action=pass[ox{k}]")
+        n, top = n + 1, f"[ox{k}]"
     if plan.logo:
         inputs += ["-loop", "1", "-framerate", str(FPS), "-t", str(plan.total), "-i", str(guard(cfg, plan.logo))]
         filters.append(f"[{n}:v]format=rgba[logo]")
-        filters.append(f"{top}[logo]overlay={LOGO_XY[0]}:{LOGO_XY[1]}:enable='lt(t,{body_end})'[o2]")
+        filters.append(f"{top}[logo]overlay={plan.logo_xy[0]}:{plan.logo_xy[1]}:enable='lt(t,{body_end})'[o2]")
         n, top = n + 1, "[o2]"
     if plan.progress_bar:
         filters.append(f"color=c=0xFFD400:s={W}x10:r={FPS}:d={plan.total}[bar]")
@@ -169,8 +182,8 @@ def command(cfg: Config, plan: Plan) -> list[str]:
 
 
 def render(cfg: Config, plan: Plan, run: RunCmd = run_cmd) -> Path:
-    if plan.total > cfg.get("video.max_seconds", 60):
-        raise RenderError(f"planned video is {plan.total:.1f}s > video.max_seconds")
+    if plan.total > plan.max_seconds:
+        raise RenderError(f"planned video is {plan.total:.1f}s > the format's {plan.max_seconds:.0f}s cap")
     cmd = command(cfg, plan)
     part = plan.out.with_name(plan.out.stem + ".part.mp4")
     cmd[-1] = str(part)

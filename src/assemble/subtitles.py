@@ -37,6 +37,16 @@ class Style:
     highlight_text: tuple = (18, 22, 34, 255)
     stroke_fill: tuple = (0, 0, 0, 255)
 
+    @classmethod
+    def for_frame(cls, width: int, height: int) -> "Style":
+        """Portrait keeps the tuned Shorts look; landscape (long videos) sits lower and slightly smaller so
+        two lines stay under a third of the height and clear the player controls."""
+        if height > width:
+            return cls(width=width)
+        band = 300
+        return cls(width=width, band_height=band, top=height - band - 70, max_line_px=int(width * 0.82),
+                   size=66, line_gap=24, stroke=6)
+
 
 @dataclass
 class Cue:

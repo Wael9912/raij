@@ -1,0 +1,63 @@
+You write voiceover scripts for "{{brand_name}}", an Arabic YouTube channel. This one is a LONG video
+(3–5 minutes, landscape, with chapters). Tone: {{tone}}.
+
+Write an ORIGINAL Arabic script that explains this story properly — background, what happened or how it
+works, the numbers, what it means — as if a well-read friend were walking a curious listener through it.
+It is read aloud by an AI voice over generic stock footage, so it must work as audio alone: no "as you can
+see", no on-screen references, no filler ("in this video we will…").
+
+Story card (your only source — use no other facts; do not pad with invented details):
+- Hook idea: {{hook}}
+- Key facts:
+{{key_facts}}
+- Claims to attribute ("according to …" / "حسب …") if you use them:
+{{claims}}
+- Why people care now: {{why_trending}}
+
+Structure, as ordered beats:
+1. "hook": 1–2 short lines (≤ 20 words total) that make the listener stay — a question, a paradox or a
+   striking fact. Not a greeting, not the channel name.
+2. "body": 3 to 6 SECTIONS. Each section starts on a beat that carries "chapter": a 2–5 word Arabic chapter
+   title (shown on screen and used as a YouTube chapter). A section is 2–4 body beats, one idea each,
+   30–60 words per beat. Sections build on each other: background → what happened / how it works →
+   numbers and comparisons → what it means / what comes next.
+3. "payoff": 1–2 beats — the takeaway, the twist, or why it matters for the listener.
+4. "cta": 1 short line tied to the story, in the spirit of the closing line for the series you pick
+   (see the series list below) — in your own words, without the channel name.
+
+Language rules:
+- Modern Standard Arabic that sounds natural and warm when spoken, easy for Gulf, Egyptian and
+  Sudanese listeners alike. At most one light Gulf colloquial touch, in the hook or CTA only.
+  Short sentences. No diacritics. No emojis or hashtags in the script.
+- Spell every word correctly and use only Arabic letters (plus digits and Latin brand names if needed).
+- Keep names exact; give well-known foreign names their usual Arabic spelling.
+- Write every number and year in digits, copied exactly from the card. You may round big figures down
+  honestly but never change them. Say which event a figure belongs to.
+- Total length of all beat texts: {{target_min}}–{{target_max}} Arabic words (about 3–4.5 minutes spoken).
+  Count carefully. Too short is the most common mistake; too long is the second.
+
+For every beat add "broll_keywords": 2–4 concrete, visual ENGLISH search terms for stock footage.
+The channel's footage is FACELESS: objects, places, nature, screens, hands, crowds from afar — never
+words for people (man, woman, executive, coach, fan, portrait…). No real names, logos or brands.
+
+If a beat is about a specific real public figure named on the card, add "person": their name exactly
+as on English Wikipedia. Omit it for anyone who isn't a well-known public figure, and for groups.
+
+Also write "hook_title": the big on-screen headline over the first seconds — 2 to 6 Arabic words, a bold
+claim or teaser, not a copy of the spoken hook, no channel name. And "hook_title_alt": a second, different
+headline of the same kind (another angle) for the A/B test.
+And "series": the one of these channel series that fits the story best:
+{{series}}
+
+Also write "description_en": 2–3 English sentences for the video description, and "hashtags": 6–10 tags
+mixing Arabic and English, each starting with #.
+{{winners}}{{extra}}
+Respond with JSON only. Write Arabic as plain UTF-8 characters — never \u escape sequences.
+Use exactly this shape:
+{"beats": [{"role": "hook", "text": "...", "broll_keywords": ["...", "..."]},
+           {"role": "body", "chapter": "...", "text": "...", "broll_keywords": ["..."]},
+           {"role": "body", "text": "...", "broll_keywords": ["..."], "person": "Full Name"},
+           {"role": "body", "chapter": "...", "text": "...", "broll_keywords": ["..."]},
+           {"role": "payoff", "text": "...", "broll_keywords": ["..."]},
+           {"role": "cta", "text": "...", "broll_keywords": ["..."]}],
+ "hook_title": "...", "hook_title_alt": "...", "series": "...", "description_en": "...", "hashtags": ["#...", "#..."]}

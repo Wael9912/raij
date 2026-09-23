@@ -17,9 +17,10 @@ from typing import Any
 
 import httpx
 
-from src import db, llm
+from src import db, formats, llm
 from src.config import Config
 from src.discover.common import make_client
+from src.discover.manual import title_of
 from src.extract.sources import ExtractError, RunCmd, SourceText, run_cmd, source_text
 
 log = logging.getLogger("raij.extract")
@@ -27,8 +28,13 @@ log = logging.getLogger("raij.extract")
 KIND = {
     "article": "full article", "news": "news articles from several outlets", "summary": "feed summary only",
     "headlines": "headlines only", "selftext": "Reddit post", "autosubs": "video subtitles",
-    "whisper": "video speech transcript",
+    "whisper": "video speech transcript", "wiki": "Wikipedia article plus news",
 }
+# What the card must carry for a long video (Phase 15): a 4-minute script needs sections, not 5 facts.
+DEPTH_SHORT = ('- "key_facts": 3 to 5 short standalone facts, most important first.')
+DEPTH_LONG = ('- "key_facts": 8 to 14 short standalone facts, most important first — enough for a 3–5 minute '
+              'explainer: background, how it works or what happened step by step, numbers, comparisons, what '
+              'comes next. Group them in the order a narrator would tell them.')
 
 
 class CardError(ValueError):
@@ -59,6 +65,10 @@ def _retry_later(conn: sqlite3.Connection, row: dict[str, Any], max_attempts: in
 def _found_via(row: dict[str, Any]) -> str:
     raw = json.loads(row.get("raw_json") or "{}")
     bits = [row["source"]]
+    if row["source"] == "manual":
+        return "the channel owner asked for this topic"
+    if row["source"] == "wiki":
+        return f"Arabic Wikipedia most-viewed articles ({row.get('views') or '?'} views yesterday)"
     if row["source"] == "trends":
         bits.append(f"Google Trends {row['region']}, {raw.get('approx_traffic') or '?'} searches")
     elif raw.get("feed"):
@@ -70,7 +80,7 @@ def _found_via(row: dict[str, Any]) -> str:
     return ", ".join(bits)
 
 
-def validate_card(data: Any) -> dict[str, Any]:
+def validate_card(data: Any, max_facts: int = 5, categories: list[str] | None = None) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise CardError("card is not a JSON object")
     if data.get("usable") is False:
@@ -80,11 +90,25 @@ def validate_card(data: Any) -> dict[str, Any]:
     if not hook or len(facts) < 2:
         raise CardError("card is missing a hook or key facts")
     claims = [c for c in data.get("claims") or [] if isinstance(c, dict) and c.get("claim")]
-    return {"hook": hook, "key_facts": facts[:5], "claims": claims,
+    card = {"hook": hook, "key_facts": facts[:max_facts], "claims": claims,
             "why_trending": str(data.get("why_trending") or "").strip()}
+    cat = str(data.get("category") or "").strip().lower()
+    if categories and cat in categories:
+        card["category"] = cat
+    return card
 
 
 def distill(cfg: Config, row: dict[str, Any], src: SourceText, client: httpx.Client | None = None) -> dict[str, Any]:
+    deep = "long" in formats.wanted_formats(row)
+    categories = [str(c) for c in cfg.get("ranking.categories", []) or []]
+    extra = ""
+    if row["source"] == "manual":                            # owner topics skipped the rank screen
+        extra = ('\n- This item is a topic the channel owner asked for. If the source text does not actually cover '
+                 'that topic, answer "usable": false with reason "off-topic" — never build a card about something '
+                 'else that happens to be in the text.')
+        if categories:
+            extra += f'\n- "category": the closest of {", ".join(categories)} for this story.'
+        extra += '\n- "hook" and the facts must be about the topic as the owner phrased it.'
     prompt = llm.load_prompt(
         "story_distill",
         title=row["title"] or "",
@@ -92,9 +116,23 @@ def distill(cfg: Config, row: dict[str, Any], src: SourceText, client: httpx.Cli
         topic=row.get("topic") or "(none)",
         reason=row.get("rank_reason") or "(none)",
         source_kind=KIND.get(src.src, src.src),
+        length="3–5 minute" if deep else "45–60 second",
+        depth=DEPTH_LONG if deep else DEPTH_SHORT,
+        extra=extra,
         text=src.text[: cfg.get("extract.max_prompt_chars", 12000)],
     )
-    return validate_card(llm.complete_json(cfg, prompt, client=client))
+    return validate_card(llm.complete_json(cfg, prompt, client=client), max_facts=14 if deep else 5,
+                         categories=categories)
+
+
+def script_card(row: dict[str, Any]) -> tuple[SourceText, dict[str, Any]]:
+    """An owner-written script needs no research: the card is the script's own first line, and the script text
+    is stored as the "transcript" so the script stage can hand it on verbatim."""
+    text = (formats.wanted(row).get("text") or "").strip()
+    if len(text.split()) < 12:
+        raise ExtractError("the provided script is too short")
+    return (SourceText(text, "owner", []),
+            {"hook": title_of(text), "key_facts": [], "claims": [], "why_trending": "written by the channel owner"})
 
 
 def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,
@@ -116,13 +154,20 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
     cards, failed, retry = [], [], []
     own_client = client is None
     client = client or make_client()
+    if own_client:
+        # The same client fetches articles and asks the LLM for the card; a long-form card on a busy free-tier
+        # model takes well over the 20 s fetch timeout (seen live: ReadTimeout on gemini-flash-lite).
+        client.timeout = httpx.Timeout(20.0, read=150.0)
     try:
         for row in pending:
             try:
-                src = source_text(cfg, client, row, run=run)
-                if len(src.text) < min_chars:
-                    raise ExtractError(f"only {len(src.text)} chars of source text ({src.src})")
-                card = distill(cfg, row, src, client=client)
+                if formats.wanted(row).get("kind") == "script":
+                    src, card = script_card(row)
+                else:
+                    src = source_text(cfg, client, row, run=run)
+                    if len(src.text) < min_chars:
+                        raise ExtractError(f"only {len(src.text)} chars of source text ({src.src})")
+                    card = distill(cfg, row, src, client=client)
             except ExtractError as exc:
                 log.warning("#%d %s: %s", row["id"], row["source"], exc)
                 conn.execute("UPDATE candidates SET status = 'extract_failed' WHERE id = ?", (row["id"],))
@@ -153,7 +198,8 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
                  json.dumps(card["key_facts"], ensure_ascii=False), json.dumps(card["claims"], ensure_ascii=False),
                  card["why_trending"]),
             ).lastrowid
-            conn.execute("UPDATE candidates SET status = 'extracted' WHERE id = ?", (row["id"],))
+            conn.execute("UPDATE candidates SET status = 'extracted', category = coalesce(category, ?) WHERE id = ?",
+                         (card.get("category"), row["id"]))
             conn.commit()
             cards.append({"story_id": story_id, "candidate_id": row["id"], "title": row["title"],
                           "transcript_src": src.src, "source_chars": len(src.text), "sources": src.urls, **card})

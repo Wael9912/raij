@@ -1,0 +1,38 @@
+The owner of "{{brand_name}}", an Arabic video channel, wrote this voiceover script themselves. Prepare it
+for production WITHOUT rewriting it: split it into beats, keep every word as written (you may only fix
+obvious typos and normalise punctuation), and add the production fields.
+
+Script:
+<<<
+{{text}}
+>>>
+
+Beats, in the script's own order:
+- "hook": the first sentence or two.
+- "body": one beat per idea or paragraph (30–60 words each; never merge unrelated ideas).
+  When the script clearly moves to a new part, put "chapter": a 2–5 word Arabic chapter title on the first
+  beat of that part (use it only for scripts longer than about 200 words).
+- "payoff": the beat that carries the takeaway, if there is one.
+- "cta": the last line if it is a call to action (follow, share, comment); otherwise leave the last beat as
+  "body" or "payoff".
+The concatenation of all beat texts must equal the script (same words, same order). Do not add or drop
+sentences. If the script is not Arabic, keep it as written anyway.
+
+For every beat add "broll_keywords": 2–4 concrete, visual ENGLISH search terms for stock footage.
+The footage is FACELESS: objects, places, nature, screens, hands, crowds from afar — never words for
+people (man, woman, executive, coach, fan, portrait…). No real names, logos or brands.
+If a beat is about a specific real public figure, add "person": their name exactly as on English Wikipedia.
+
+Also write "hook_title": a big on-screen headline — 2 to 6 Arabic words, a bold claim or teaser, no channel
+name; "hook_title_alt": a second, different one; "series": the one of these channel series that fits best:
+{{series}}
+"description_en": 1–3 English sentences for the caption; "hashtags": 5–8 tags mixing Arabic and English,
+each starting with #.
+{{extra}}
+Respond with JSON only. Write Arabic as plain UTF-8 characters — never \u escape sequences.
+Use exactly this shape:
+{"beats": [{"role": "hook", "text": "...", "broll_keywords": ["...", "..."]},
+           {"role": "body", "chapter": "...", "text": "...", "broll_keywords": ["..."]},
+           {"role": "payoff", "text": "...", "broll_keywords": ["..."]},
+           {"role": "cta", "text": "...", "broll_keywords": ["..."]}],
+ "hook_title": "...", "hook_title_alt": "...", "series": "...", "description_en": "...", "hashtags": ["#...", "#..."]}

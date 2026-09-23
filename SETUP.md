@@ -127,7 +127,13 @@ ffmpeg -hide_banner -encoders | grep libx264      # H.264 encoder must be presen
 
 ---
 
-## GitHub Actions — how Ra'ij runs 24/7 for $0 (current setup)
+## GitHub Actions — the hosted fallback (paused 2026-09-23; the Mac runs the pipeline now)
+
+Paused because runs were slow to start and the bot couldn't trigger production there. The workflow is
+dispatch-only (no cron) and the Cloudflare Worker's cron is `[]`. To go hosted again: pack the Mac's state
+(`uv run python -m src.main state pack state.enc` → `gh release upload state-bootstrap state.enc --clobber`),
+`uninstall-services` on the Mac, restore `crons` in the workflow and the Worker, set `RAIJ_ENABLED=true`.
+The rest of this section describes that setup.
 
 No server and no card: `.github/workflows/raij.yml` runs every ~10 min on GitHub's machines (public repo =
 free, unlimited minutes). Each run restores the encrypted state (DB + media still needed) from the Actions
@@ -157,7 +163,7 @@ and saves the state again if anything changed. Taps are handled within ~10–15 
 - Terms: GitHub intends Actions for software projects; if it ever disables the workflow, fall back to the Mac
   (`install-services` below) — restore the latest state first (`state unpack` on the weekly backup).
 
-## Running without a terminal on the Mac (fallback)
+## Running on the Mac (current setup)
 
 ```bash
 uv run python -m src.main install-services     # bot + daily pipeline + publish job, as macOS launchd agents
@@ -177,4 +183,9 @@ uv run python -m src.main uninstall-services   # stop and remove them
 - Cron alternative (if you don't want launchd):
   `0 7 * * *  cd ~/Documents/Projects/social-media-automation && /opt/homebrew/bin/uv run python -m src.main run-daily >> data/logs/daily.log 2>&1`
 
-Telegram commands: `/status`, `/pause` (kill switch — nothing publishes), `/resume`, `/report` (weekly report now).
+Telegram commands: `/trending` (pick topics → 📱 Short / 🎬 Long → platforms → 🚀 Make), `/topic <text>` (research
+and make a video about anything), `/script <text>` (voice your own script as written; ≤115 words → Short, else Long
+up to ~520 words), `/run` (the whole daily pipeline now), `/jobs` (what's producing + log tail), `/queue`, `/status`,
+`/pause` (kill switch — nothing publishes), `/resume`, `/report` (weekly report now), `/help`.
+Long videos (2–5 min, landscape, chapters, thumbnail) go to YouTube as regular videos and to the TikTok export
+folder; Reels APIs cap at 90 s. Logs for bot-started jobs: `data/logs/jobs.log`.

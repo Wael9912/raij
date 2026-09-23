@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE TABLE IF NOT EXISTS candidates (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    source        TEXT NOT NULL,                    -- youtube|reddit|trends|rss
+    source        TEXT NOT NULL,                    -- youtube|reddit|trends|rss|wiki|manual
     external_id   TEXT NOT NULL,
     canonical_url TEXT NOT NULL UNIQUE,
     title         TEXT,
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     ad_safe       INTEGER,                          -- 0/1: advertiser-friendly; 0 → rejected
     format        TEXT,                             -- story|list|howto|explainer|fact
     attempts      INTEGER NOT NULL DEFAULT 0,       -- retryable extract/script failures so far (A6)
+    wanted        TEXT,                             -- JSON: owner's ask (formats, platforms, kind, text) — src/formats.py
     status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged|extracted|extract_failed|scripted|script_rejected|expired
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS scripts (
     story_id        INTEGER NOT NULL REFERENCES stories(id),
     brand_id        TEXT NOT NULL,
     version         INTEGER NOT NULL DEFAULT 1,
+    kind            TEXT NOT NULL DEFAULT 'short',  -- short|long (src/formats.py)
     body_ar         TEXT NOT NULL,
     beats           TEXT,                           -- JSON: [{text, broll_keywords}]
     description_en  TEXT,
@@ -173,6 +175,8 @@ MIGRATIONS = [
     ("candidates", "evergreen", "INTEGER"),
     ("candidates", "ad_safe", "INTEGER"),
     ("candidates", "format", "TEXT"),
+    ("candidates", "wanted", "TEXT"),
+    ("scripts", "kind", "TEXT NOT NULL DEFAULT 'short'"),
 ]
 
 

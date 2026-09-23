@@ -122,11 +122,11 @@ def logo_layer(brand: dict[str, Any], out: Path, opacity: float = 0.75) -> Path:
 TITLE_MIN_SIZE = 56
 
 
-def _title_block(title: str, series: str | None) -> Image.Image:
+def _title_block(title: str, series: str | None, max_px: int = 960) -> Image.Image:
     size = 118
-    while size > TITLE_MIN_SIZE and len(wrap(title, size, 960)) > 2:   # shrink to fit two lines, never drop words
+    while size > TITLE_MIN_SIZE and len(wrap(title, size, max_px)) > 2:   # shrink to fit two lines, never drop words
         size -= 6
-    wrapped = wrap(title, size, 960)
+    wrapped = wrap(title, size, max_px)
     if len(wrapped) > 2:
         # Still too long at the smallest readable size: a third line would sit on the subtitles (A14).
         # Keep two lines and mark the cut rather than overlap.
@@ -148,11 +148,13 @@ def _title_block(title: str, series: str | None) -> Image.Image:
 
 
 def hook_sequence(title: str, series: str | None, out_dir: Path, seconds: float,
-                  fps: int = 30, center_y: int = 820) -> Path:
+                  fps: int = 30, center_y: int | None = None, frame: tuple[int, int] = (W, H)) -> Path:
     """The hook title popping in at the start and fading out by `seconds`; returns an ffconcat list.
     The stream ends there and the overlay passes the video through (eof_action=pass)."""
+    W, H = frame                                                       # noqa: N806
+    center_y = center_y if center_y is not None else (820 if H > W else int(H * 0.42))
     out_dir.mkdir(parents=True, exist_ok=True)
-    block = _title_block(title, series)
+    block = _title_block(title, series, max_px=960 if H > W else int(W * 0.8))
     blank = out_dir / "hook_blank.png"
     Image.new("RGBA", (W, H), (0, 0, 0, 0)).save(blank)
 
@@ -182,19 +184,69 @@ def hook_sequence(title: str, series: str | None, out_dir: Path, seconds: float,
     return lst
 
 
-def endcard(brand: dict[str, Any], out: Path, series: str | None = None, cta: str | None = None) -> Path:
+def endcard(brand: dict[str, Any], out: Path, series: str | None = None, cta: str | None = None,
+            frame: tuple[int, int] = (W, H)) -> Path:
     """Closing card: wordmark, series badge, closing line (`cta`, rotated per series in Phase 12)."""
+    W, H = frame                                                       # noqa: N806
+    scale = 1.0 if H > W else 0.72                                     # landscape has less height to fill
     img = Image.new("RGBA", (W, H), INK)
-    parts = [text_image(brand.get("name") or brand["id"], 260, fill=YELLOW)]
+    parts = [text_image(brand.get("name") or brand["id"], int(260 * scale), fill=YELLOW)]
     if series:
-        parts.append(pill(series, 64))
+        parts.append(pill(series, int(64 * scale)))
     line = cta or "تابعنا للمزيد"
     size = 88 if len(line) <= 18 else 68                       # longer lines still fit the width
-    parts.append(text_image(line, size, fill=WHITE))
-    gap = 70
-    y = (H - sum(p.height for p in parts) - gap * (len(parts) - 1)) // 2 - 60
+    parts.append(text_image(line, int(size * scale), fill=WHITE))
+    gap = int(70 * scale)
+    y = (H - sum(p.height for p in parts) - gap * (len(parts) - 1)) // 2 - int(60 * scale)
     for p in parts:
         img.alpha_composite(p, ((W - p.width) // 2, y))
         y += p.height + gap
     img.convert("RGB").save(out)
     return out
+
+
+def chapter_sequence(chapters: list[dict[str, Any]], out_dir: Path, total: float, frame: tuple[int, int] = (W, H),
+                     seconds: float = 3.0, fps: int = 30) -> Path | None:
+    """Long videos (Phase 15): each chapter title slides in as a yellow pill near the top for `seconds` at its
+    start time. One ffconcat list of full-frame PNGs (blank between cards), like the hook title."""
+    W, H = frame                                                       # noqa: N806
+    cards = [c for c in chapters if c.get("title") and float(c.get("at") or 0) > 0.5]
+    if not cards:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    blank = out_dir / "chapter_blank.png"
+    Image.new("RGBA", (W, H), (0, 0, 0, 0)).save(blank)
+    entries: list[tuple[Path, float]] = []
+    t = 0.0
+    step = 1 / fps
+    y = 110 if W > H else 300
+    for i, c in enumerate(sorted(cards, key=lambda c: float(c["at"]))):
+        at = float(c["at"])
+        if at <= t:
+            continue
+        entries.append((blank, at - t))
+        block = pill(str(c["title"]), 52 if W > H else 46)
+        frames = [(0.4, 1.0), (0.7, 1.0), (0.9, 1.0), (1.0, 1.0)]        # slide in, hold, fade out
+        for k, (sx, a) in enumerate(frames):
+            img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            img.alpha_composite(block, ((W - block.width) // 2 - int((1 - sx) * 120), y))
+            path = out_dir / f"chapter_{i}_{k}.png"
+            img.save(path, optimize=True)
+            entries.append((path, step))
+        hold = max(seconds - step * 7, 0.5)
+        entries.append((path, hold))
+        for k, a in enumerate((0.66, 0.33)):
+            faded = block.copy()
+            faded.putalpha(faded.getchannel("A").point(lambda v, a=a: int(v * a)))
+            img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            img.alpha_composite(faded, ((W - block.width) // 2, y))
+            path = out_dir / f"chapter_{i}_out{k}.png"
+            img.save(path, optimize=True)
+            entries.append((path, step))
+        t = at + step * 6 + hold
+    if total > t:
+        entries.append((blank, total - t))
+    lst = out_dir / "chapters.txt"
+    body = "ffconcat version 1.0\n" + "".join(f"file '{p.name}'\nduration {d:.3f}\n" for p, d in entries)
+    lst.write_text(body + f"file '{entries[-1][0].name}'\n", encoding="utf-8")
+    return lst

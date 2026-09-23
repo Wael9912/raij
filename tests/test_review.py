@@ -392,7 +392,7 @@ def test_help_and_unknown_command(env):
     tg = FakeTelegram()
     h = _handler(cfg, conn, tg)
     h.handle(_msg("/help"))
-    assert tg.calls[-1][1]["text"].startswith("🤖 Ra'ij review bot")
+    assert tg.calls[-1][1]["text"].startswith("🤖 Ra'ij bot") and "/trending" in tg.calls[-1][1]["text"]
     h.handle(_msg("/frobnicate"))
     assert "Unknown command /frobnicate" in tg.calls[-1][1]["text"]
 
@@ -412,7 +412,7 @@ def test_slash_menu_registered_once_per_version(env):
     tg = FakeTelegram()
     assert botmod.ensure_commands(conn, tg.bot()) is True
     assert tg.methods() == ["setMyCommands"]
-    assert [c["command"] for c in tg.calls[0][1]["commands"]][:2] == ["queue", "status"]
+    assert [c["command"] for c in tg.calls[0][1]["commands"]][:3] == ["trending", "topic", "script"]
     assert botmod.ensure_commands(conn, tg.bot()) is False and len(tg.calls) == 1
 
 
@@ -497,8 +497,9 @@ class FakeBuild:
         self.calls = {}
         self.cfg = cfg
 
-        def write_script(cfg, story, brand, edit_note="", client=None):
+        def write_script(cfg, story, brand, edit_note="", client=None, kind="short"):
             self.calls["edit_note"] = edit_note
+            self.calls["kind"] = kind
             status = "passed" if passed else "rejected"
             v = {"version": 1, "body_ar": "جديد", "beats": BEATS, "description_en": "d", "hashtags": [],
                  "similarity": None, "status": status, "notes": {"reason": "too similar"} if not passed else {}}

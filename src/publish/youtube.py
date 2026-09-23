@@ -23,7 +23,7 @@ import httpx
 
 from src.config import Config
 from src.discover.common import FetchError, request
-from src.publish.common import Posted, PostText, PublishError, PublishSkipped
+from src.publish.common import Posted, PostText, PublishError, PublishSkipped, chapter_lines
 
 log = logging.getLogger("raij.publish")
 
@@ -38,6 +38,7 @@ AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 UPLOAD_URI = "https://www.googleapis.com/upload/youtube/v3/videos"
 API_URI = "https://www.googleapis.com/youtube/v3"
+THUMB_URI = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 CHUNK = 8 * 1024 * 1024                    # multiple of 256 KiB, as the API requires
 MAX_STALLS = 3                              # consecutive 308s with no progress before giving up (A12)
 # YouTube category ids by story category.
@@ -160,9 +161,20 @@ def title_for(text: PostText) -> str:
     return title if len(title) <= TITLE_MAX else title[:TITLE_MAX - 1] + "…"
 
 
+def video_url(video_id: str, kind: str = "short") -> str:
+    return f"https://youtube.com/shorts/{video_id}" if kind != "long" else f"https://youtu.be/{video_id}"
+
+
 def metadata(cfg: Config, text: PostText) -> dict:
+    """Shorts get "#Shorts" in the description; long videos (Phase 15) get their chapter timestamps instead
+    (YouTube turns them into chapters when the first is 00:00 and there are ≥3, 10 s apart)."""
+    if text.kind == "long":
+        chapters = chapter_lines(text.chapters)
+        description = text.caption + (f"\n\n{chapters}" if chapters else "")
+    else:
+        description = f"{text.caption}\n\n#Shorts"
     return {
-        "snippet": {"title": title_for(text), "description": f"{text.caption}\n\n#Shorts"[:4900],
+        "snippet": {"title": title_for(text), "description": description[:4900],
                     "tags": [t.lstrip("#") for t in text.hashtags][:15],
                     "categoryId": CATEGORY_IDS.get(text.category or "", "24"),
                     "defaultLanguage": "ar", "defaultAudioLanguage": "ar"},
@@ -198,7 +210,7 @@ def publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, vide
     if dup:
         log.warning("Video %d is already on YouTube as %s (same title, last 7 days) — adopting it, not re-uploading",
                     video_id, dup)
-        return Posted(dup, f"https://youtube.com/shorts/{dup}")
+        return Posted(dup, video_url(dup, text.kind))
     size = video.stat().st_size
     if not size:
         raise PublishError(f"{video.name} is empty — nothing to upload")
@@ -232,7 +244,27 @@ def publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, vide
         raise PublishError(f"YouTube upload finished without a video id: {str(body)[:200]}")
     if cfg.get("publish.youtube_playlists", True) and text.series:
         add_to_playlist(cfg, client, auth, body["id"], text.series)     # best effort: never fails the post
-    return Posted(body["id"], f"https://youtube.com/shorts/{body['id']}")
+    if text.kind == "long" and text.thumbnail and cfg.get("publish.youtube_thumbnails", True):
+        set_thumbnail(cfg, client, auth, body["id"], cfg.root / text.thumbnail)   # best effort too
+    return Posted(body["id"], video_url(body["id"], text.kind))
+
+
+def set_thumbnail(cfg: Config, client: httpx.Client, auth: dict, video_id: str, path: Path) -> bool:
+    """Custom thumbnail for a long video (50 units; Shorts ignore it; the channel needs phone verification once).
+    Any failure only logs."""
+    from src.assemble.render import guard
+    try:
+        real = guard(cfg, path)
+        if not real.exists() or real.stat().st_size > 2 * 1024 * 1024:
+            log.warning("Thumbnail skipped: %s missing or over 2 MB", path)
+            return False
+        request(client, "POST", f"{THUMB_URI}?videoId={video_id}", headers={**auth, "Content-Type": "image/jpeg"},
+                content=real.read_bytes(), retries=0)
+    except Exception as exc:                                # noqa: BLE001 — cosmetic step
+        log.warning("Thumbnail for %s not set: %s", video_id, exc)
+        return False
+    log.info("Thumbnail set for %s", video_id)
+    return True
 
 
 # --- playlists (Phase 12) --------------------------------------------------------

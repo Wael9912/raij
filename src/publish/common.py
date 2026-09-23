@@ -32,6 +32,10 @@ class PostText:
     hook_ar: str = ""                     # the spoken Arabic hook: first line of the description (SEO)
     title_alt: str | None = None          # variant B headline (Phase 12 A/B): Instagram/Facebook use it
     caption_alt: str | None = None        # the caption with variant B on top
+    kind: str = "short"                   # short | long (Phase 15): long = regular YouTube video with chapters
+    chapters: list[dict[str, Any]] | None = None     # [{at: seconds, title}] from assemble
+    thumbnail: str | None = None          # repo-relative JPEG for long videos
+    duration_s: float | None = None
 
 
 def seo_tags(cfg: Any, category: str | None) -> list[str]:
@@ -59,6 +63,21 @@ def _series(ctx: dict[str, Any], notes: dict[str, Any], script_notes: dict[str, 
     return str(notes.get("series") or script_notes.get("series") or "") or None
 
 
+def chapter_lines(chapters: list[dict[str, Any]] | None) -> str:
+    """YouTube chapter timestamps: first at 00:00, each ≥10 s apart, ≥3 in total — else nothing."""
+    rows = sorted((c for c in chapters or [] if c.get("title") is not None), key=lambda c: float(c.get("at") or 0))
+    if len(rows) < 3 or float(rows[0].get("at") or 0) != 0.0:
+        return ""
+    out, last = [], -10.0
+    for c in rows:
+        at = float(c.get("at") or 0)
+        if at - last < 10:
+            continue
+        last = at
+        out.append(f"{int(at) // 60:02d}:{int(at) % 60:02d} {str(c['title']).strip()}")
+    return "\n".join(out) if len(out) >= 3 else ""
+
+
 def post_text(ctx: dict[str, Any], cfg: Any = None) -> PostText:
     """Caption from the approved script. Photo credits are always included (CC BY requires it).
     Layout (Phase 12 SEO): headline / spoken Arabic hook / English description / tags / sources / credits."""
@@ -80,6 +99,9 @@ def post_text(ctx: dict[str, Any], cfg: Any = None) -> PostText:
         parts = [head, hook_ar if hook_ar and hook_ar != head else ""] + tail
         return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
+    kind = str(ctx.get("kind") or notes.get("kind") or "short")
     return PostText(headline.strip(), build(headline), tags, ctx.get("category"),
                     series=_series(ctx, notes, script_notes), hook_ar=hook_ar,
-                    title_alt=str(alt).strip() if alt else None, caption_alt=build(str(alt)) if alt else None)
+                    title_alt=str(alt).strip() if alt else None, caption_alt=build(str(alt)) if alt else None,
+                    kind=kind, chapters=notes.get("chapters") or None, thumbnail=notes.get("thumbnail"),
+                    duration_s=ctx.get("duration_s"))

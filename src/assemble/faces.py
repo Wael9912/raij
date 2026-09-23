@@ -22,7 +22,8 @@ log = logging.getLogger("raij.assemble")
 
 MODEL = ROOT / "assets" / "models" / "face_detection_yunet_2023mar.onnx"
 SCORE = 0.45          # tuned on real Pexels frames: catches astronaut/statue faces, no false alarms on scenes
-MIN_AREA = 0.015      # faces smaller than 1.5% of the frame (distant crowds) are fine
+MIN_AREA = 0.015      # faces smaller than 1.5% of the frame (distant crowds) are fine — portrait Shorts
+MIN_AREA_WIDE = 0.005 # landscape: a 100×100 px face in 1920×1080 is 0.5% and still clearly a person
 WIDTH = 640
 
 
@@ -45,9 +46,10 @@ def face_ratio(image: np.ndarray) -> float:
     return max(float(f[2] * f[3]) / (w * h) for f in faces)
 
 
-def has_face(client: httpx.Client, urls: list[str]) -> bool:
-    """True if any preview image shows a face big enough to be mistaken for someone. Unreadable
-    previews count as no face (the clip still gets human review)."""
+def has_face(client: httpx.Client, urls: list[str], min_area: float = MIN_AREA) -> bool:
+    """True if any preview image shows a face big enough to be mistaken for someone (≥ `min_area` of the frame;
+    landscape long-form uses a lower bar — a wide frame makes a clear face "small"). Unreadable previews count
+    as no face (the clip still gets human review)."""
     for url in urls:
         try:
             data = request(client, "GET", url, retries=1).content
@@ -55,6 +57,6 @@ def has_face(client: httpx.Client, urls: list[str]) -> bool:
             log.debug("preview %s unreadable: %s", url, exc)
             continue
         image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
-        if image is not None and face_ratio(image) >= MIN_AREA:
+        if image is not None and face_ratio(image) >= min_area:
             return True
     return False

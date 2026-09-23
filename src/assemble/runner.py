@@ -18,8 +18,8 @@ from typing import Any
 
 import httpx
 
-from src.assemble import brand, broll, portrait, render, subtitles
-from src import db
+from src.assemble import brand, broll, portrait, render, subtitles, thumbnail
+from src import db, formats
 from src.config import Config
 from src.discover.common import make_client
 
@@ -29,7 +29,7 @@ MUSIC_EXT = {".mp3", ".m4a", ".wav", ".ogg", ".flac"}
 
 
 # A video row plus what assemble_video needs from its script and story.
-VIDEO_SELECT = ("SELECT v.*, x.beats, x.brand_id, x.notes AS script_notes, c.category FROM videos v "
+VIDEO_SELECT = ("SELECT v.*, x.beats, x.brand_id, x.kind, x.notes AS script_notes, c.category FROM videos v "
                 "JOIN scripts x ON x.id = v.script_id LEFT JOIN stories s ON s.id = x.story_id "
                 "LEFT JOIN candidates c ON c.id = s.candidate_id")
 
@@ -81,13 +81,14 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     timing = json.loads((cfg.root / video["voice_path"]).with_suffix(".words.json").read_text(encoding="utf-8"))
     spans, voice_s = timing["beats"], timing["duration"]
     endcard_s = cfg.get("video.endcard_seconds", 2.0)
+    fmt = formats.get(cfg, video.get("kind"))              # short: 1080×1920; long: 1920×1080 (Phase 15)
 
     out_dir = cfg.root / "assets" / "generated" / "video"
     work = out_dir / str(video["id"])
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
-    renderer = subtitles.Renderer()
+    renderer = subtitles.Renderer(subtitles.Style.for_frame(*fmt.frame))
 
     used: set[str] = set(exclude or ())
     photos: dict[str, portrait.Photo | None] = {}
@@ -95,7 +96,7 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     for i, (beat, span) in enumerate(zip(beats_text, spans)):
         start = 0.0 if i == 0 else span["start"]
         end = spans[i + 1]["start"] if i + 1 < len(spans) else voice_s
-        n = broll.clips_needed(end - start)
+        n = broll.clips_needed(end - start, fmt.cut_every)
         paths: list[Path] = []
         # A beat about a public figure opens on their licensed photo; the rest is faceless stock.
         person = beat.get("person")
@@ -103,7 +104,7 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
             photos[person] = portrait.find(cfg, client, person)
         photo = photos.get(person) if person else None
         if photo:
-            frame = portrait.compose(cfg.root / photo.path, photo.credit, work / f"photo_{i}.jpg")
+            frame = portrait.compose(cfg.root / photo.path, photo.credit, work / f"photo_{i}.jpg", frame=fmt.frame)
             paths.append(frame.relative_to(cfg.root))
             manifest.append({"provider": "wikimedia", "id": photo.file, "page": photo.page, "author": photo.author,
                              "license": photo.license, "credit": photo.credit, "person": person,
@@ -113,7 +114,8 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
         stock: list[broll.Clip] = []
         if not photo or n > 1:
             need = (end - start) * (n - 1) / n if photo else end - start
-            stock = broll.choose(cfg, client, beat["broll_keywords"], need=need, used=used, recent=recent)
+            stock = broll.choose(cfg, client, beat["broll_keywords"], need=need, used=used, recent=recent,
+                                 orientation=fmt.orientation, cut_every=fmt.cut_every)
             for clip in stock:
                 broll.download(cfg, client, clip)
                 paths.append(Path(clip.path))
@@ -127,27 +129,52 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     script_notes = json.loads(video.get("script_notes") or "{}")
     series = brand.series_name(look, video.get("category"), script_notes.get("series"))
     title = script_notes.get("hook_title")
-    hook_s = float(cfg.get("video.hook_title_seconds", 2.5)) if title else 0.0
+    hook_s = fmt.hook_title_seconds if title else 0.0
     subs_list = subtitles.render_sequence(timing["words"], spans, work, total, renderer, hide_until=hook_s)
     from src.script.write import cta_line
     cta = cta_line(look, series, video["id"])
-    card = brand.endcard(look, work / "endcard.png", series, cta)
+    card = brand.endcard(look, work / "endcard.png", series, cta, frame=fmt.frame)
     music = _music(cfg, video["id"])
+    # Chapters (long videos): the hook opens "المقدمة" at 0:00, then each beat carrying a title. Shown as cards
+    # and written into the YouTube description as timestamps (publish).
+    chapters = [{"at": round(float(span["start"] or 0), 3), "title": beat["chapter"]}
+                for beat, span in zip(beats_text, spans) if beat.get("chapter") and span.get("start") is not None]
+    if chapters:
+        # The model sometimes repeats a section's title on its next beat: keep the first, and keep ≥10 s apart
+        # (YouTube's rule for chapters; a card every few seconds would be noise anyway).
+        kept: list[dict[str, Any]] = [{"at": 0.0, "title": "المقدمة"}]
+        for c in chapters:
+            if c["title"] != kept[-1]["title"] and c["at"] - kept[-1]["at"] >= 10:
+                kept.append(c)
+        chapters = kept
+    overlays = []
+    lst = brand.chapter_sequence(chapters, work, total, frame=fmt.frame) if chapters else None
+    if lst:
+        overlays.append(lst)
     plan = render.Plan(segments, Path(video["voice_path"]), subs_list, renderer.style.top, card, endcard_s,
                        out_dir / f"{video['id']}.mp4", music=music,
-                       hook_list=brand.hook_sequence(title, series, work, hook_s) if title else None,
+                       hook_list=brand.hook_sequence(title, series, work, hook_s, frame=fmt.frame) if title else None,
                        logo=brand.logo_layer(look, work / "logo.png"),
                        transition=float(cfg.get("video.transition_seconds", 0.3)),
-                       progress_bar=bool(cfg.get("video.progress_bar", True)))
+                       progress_bar=bool(cfg.get("video.progress_bar", True)),
+                       width=fmt.width, height=fmt.height, max_seconds=fmt.max_seconds, overlays=overlays,
+                       logo_xy=render.LOGO_XY if fmt.portrait else (48, 40))
     render.render(cfg, plan, run=run)
 
     srt_path = out_dir / f"{video['id']}.srt"
     srt_path.write_text(subtitles.srt(timing["words"], spans, renderer), encoding="utf-8")
+    thumb = None
+    if not fmt.portrait:                                   # Shorts can't take a custom thumbnail; long videos do
+        clean = [cfg.root / m["path"] for m in manifest if m.get("provider") != "wikimedia" and m.get("path")]
+        made = thumbnail.make(cfg, plan.out, total - endcard_s, title or (beats_text[0]["text"] if beats_text else None),
+                              series, look, out_dir / f"{video['id']}.thumb.jpg", work / "thumb", run=run, clips=clean)
+        thumb = str(made.relative_to(cfg.root)) if made else None
     shutil.rmtree(work, ignore_errors=True)
     return {"video_path": str(plan.out.relative_to(cfg.root)), "subtitle_path": str(srt_path.relative_to(cfg.root)),
             "duration_s": plan.total, "manifest": manifest,
             "notes": {"voice_s": voice_s, "music": str(music) if music else None, "clips": len(manifest),
-                      "credits": credits, "hook_title": title, "series": series, "cta": cta}}
+                      "credits": credits, "hook_title": title, "series": series, "cta": cta, "kind": fmt.kind,
+                      "chapters": chapters, "thumbnail": thumb}}
 
 
 def _fail(conn: sqlite3.Connection, video: dict[str, Any], reason: str) -> None:

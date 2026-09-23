@@ -12,6 +12,8 @@ at any time.
   🎙 Re-voice             → the brand's alternate voice, re-assembled
   🔁 Retry                → on a final publish failure: re-approve and queue the failed platforms again (U9)
   /queue /status /approve_all /skip /pause /resume /report /help
+  /trending /topic /script /run /jobs → production from the bot (Phase 13): the pick flow in review/picks.py,
+                            heavy work in background jobs (src/jobs.py) so taps stay snappy
 A regenerated video is a new row (parent_id = old) sent for review; the old one is 'superseded'.
 """
 from __future__ import annotations
@@ -26,16 +28,16 @@ from typing import Any, Callable
 
 import httpx
 
-from src import db
+from src import db, formats, jobs
 from src.assemble import render
 from src.assemble.runner import VIDEO_SELECT, assemble_video
 from src.config import Config
 from src.discover.common import make_client
-from src.review import cards
+from src.review import cards, picks
 from src.review.runner import RunCmd, run_cmd, send_card
 from src.review.telegram import Bot, TelegramError
 from src.script.runner import _save
-from src.script.write import write_script
+from src.script.write import segment_script, write_script
 from src.voice import tts
 from src.voice.runner import voice_script
 
@@ -97,11 +99,11 @@ class Handler:
             if self._authorized("message", msg.get("chat"), msg.get("from")):
                 self.on_message(msg)
 
-    def _soft(self, fn: Callable, *args: Any) -> None:
+    def _soft(self, fn: Callable, *args: Any, **kwargs: Any) -> None:
         """Telegram cosmetics (the tap's toast, removing buttons) must never block the decision itself:
         a callback answered after a long regeneration is 'too old' and Telegram rejects it."""
         try:
-            fn(*args)
+            fn(*args, **kwargs)
         except TelegramError as exc:
             log.info("Ignoring cosmetic Telegram failure: %s", exc)
 
@@ -114,6 +116,9 @@ class Handler:
         user = str((cb.get("from") or {}).get("id", ""))
         msg_id = (cb.get("message") or {}).get("message_id")
         if act in cards.EXTRA:
+            if act.startswith("p"):
+                self._pick_tap(act, vid, cb["id"], msg_id)
+                return
             self._soft(self.bot.answer, cb["id"], "⏳ Working on it…")
             if act == "rt":
                 self._retry(vid, user, msg_id)
@@ -154,14 +159,17 @@ class Handler:
     def on_message(self, msg: dict[str, Any]) -> None:
         text = (msg.get("text") or "").strip()
         if text.startswith("/"):
-            self.on_command(text.split()[0].split("@")[0].lower())
+            head, _, rest = text.partition(" ")
+            self.on_command(head.split("@")[0].lower(), rest.strip())
             return
         if not text:
             return
         self._on_note(msg, text)
 
-    def on_command(self, cmd: str) -> None:
-        if cmd == "/pause":
+    def on_command(self, cmd: str, arg: str = "") -> None:
+        if cmd in ("/trending", "/run", "/topic", "/script", "/jobs", "/make"):
+            self.on_produce(cmd, arg)
+        elif cmd == "/pause":
             db.set_flag(self.conn, "publishing_paused", "1")
             self.bot.send_message(self.chat, "⏸ Publishing paused. /resume to continue.")
         elif cmd == "/resume":
@@ -183,7 +191,111 @@ class Handler:
             self.bot.send_message(self.chat, f"Unknown command {cmd}. /help lists what I understand.")
 
     def status(self) -> str:
-        return cards.status_text(self.conn, db.publishing_paused(self.conn))
+        return cards.status_text(self.conn, db.publishing_paused(self.conn)) + "\n" + jobs.status_line(self.conn)
+
+    # -- production from the bot (Phase 13) --------------------------------------------
+    def on_produce(self, cmd: str, arg: str) -> None:
+        if cmd == "/jobs":
+            tail = jobs.log_tail(self.cfg)
+            self.bot.send_message(self.chat, jobs.status_line(self.conn) + (f"\n\n📜 {tail}" if tail else ""),
+                                  disable_web_page_preview=True)
+            return
+        if cmd == "/run":
+            queued = jobs.request(self.conn, "run-daily")
+            self.bot.send_message(self.chat, "▶️ Daily pipeline queued — discover → pick → write → voice → render; "
+                                             "cards arrive here when ready." if queued else
+                                             "⏳ The daily pipeline is already queued or running. /jobs for progress.")
+            return
+        if cmd == "/trending":
+            queued = jobs.request(self.conn, "trending")
+            self.bot.send_message(self.chat, "🔎 Looking for what's trending (Google Trends, news feeds, Wikipedia) "
+                                             "— the list with pick buttons arrives in a minute or two." if queued else
+                                             "⏳ A trending search is already queued or running.")
+            return
+        if cmd in ("/topic", "/make"):
+            if len(arg.split()) < 1 or len(arg) < 3:
+                self.bot.send_message(self.chat, "Usage: /topic <what the video should be about>\n"
+                                                 "e.g. /topic لماذا ارتفع سعر الذهب هذا الأسبوع")
+                return
+            flow = picks.new(self.cfg, "topic", text=arg)
+            self._pick_send(flow)
+            return
+        if cmd == "/script":
+            words = len(arg.split())
+            if words < 12:
+                self.bot.send_message(self.chat, "Usage: /script <the full script text, at least a dozen words>\n"
+                                                 "It is voiced exactly as written; ≤115 words → Short, longer → Long "
+                                                 "(up to ~520 words ≈ 4.5 min).")
+                return
+            fmt = formats.kind_for_words(self.cfg, words)
+            if words > formats.get(self.cfg, "long").max_words:
+                self.bot.send_message(self.chat, f"That's {words} words — too long even for a 5-minute video "
+                                                 f"(max {formats.get(self.cfg, 'long').max_words}). Trim it and resend.")
+                return
+            flow = picks.new(self.cfg, "script", text=arg, fmts=[fmt], words=words)
+            self._pick_send(flow)
+
+    def _missing(self) -> dict[str, str | None]:
+        from src.publish.runner import PLATFORMS
+        return {name: check(self.cfg) for name, (check, _) in PLATFORMS.items()}
+
+    def _pick_send(self, flow: dict[str, Any]) -> None:
+        old = picks.load(self.conn)
+        if old and old.get("msg"):
+            self._soft(self.bot.edit_markup, self.chat, old["msg"], None)
+        msg = self.bot.send_message(self.chat, picks.text(flow, self._missing()), reply_markup=picks.keyboard(flow),
+                                    disable_web_page_preview=True)
+        flow["msg"] = msg["message_id"]
+        picks.save(self.conn, flow)
+
+    def _pick_tap(self, act: str, n: int, cb_id: str, msg_id: int | None) -> None:
+        flow = picks.load(self.conn)
+        if not flow or (msg_id and flow.get("msg") and flow["msg"] != msg_id):
+            self._soft(self.bot.answer, cb_id, "This list is no longer active — /trending again")
+            self._soft(self.bot.edit_markup, self.chat, msg_id, None)
+            return
+        if act == "px":
+            picks.save(self.conn, None)
+            self._soft(self.bot.answer, cb_id, "Cancelled")
+            self._soft(self.bot.edit_text, self.chat, flow["msg"], "✖ Cancelled — nothing was made.", None)
+            return
+        if act == "pg":
+            if flow["kind"] == "trend" and not flow["chosen"]:
+                self._soft(self.bot.answer, cb_id, "Pick at least one topic first")
+                return
+            self._soft(self.bot.answer, cb_id, "🚀 On it")
+            try:
+                summary = picks.commit(self.cfg, self.conn, flow)
+            except ValueError as exc:
+                self.bot.send_message(self.chat, f"⚠️ {exc}")
+                return
+            picks.save(self.conn, None)
+            jobs.request(self.conn, "produce")
+            self._soft(self.bot.edit_text, self.chat, flow["msg"], picks.text(flow, self._missing()), None)
+            self.bot.send_message(self.chat, picks.done_text(summary))
+            return
+        toast = picks.toggle(flow, act, n)
+        picks.save(self.conn, flow)
+        self._soft(self.bot.answer, cb_id, toast or "")
+        self._soft(self.bot.edit_text, self.chat, flow["msg"], picks.text(flow, self._missing()), picks.keyboard(flow),
+                   disable_web_page_preview=True)
+
+    def maintenance(self) -> None:
+        """Between polls: start queued jobs, report finished ones (called by `poll` every loop)."""
+        try:
+            event = jobs.tick(self.cfg, self.conn)
+        except Exception as exc:                            # noqa: BLE001
+            log.warning("Job maintenance failed: %s", exc)
+            return
+        if not event:
+            return
+        if "started" in event:
+            log.info("Started job %s", event["started"])
+        elif event.get("code") not in (None, 0):
+            self.bot.send_message(self.chat, f"⚠️ Job {event['finished']} ended with errors (exit {event['code']}). "
+                                             f"/jobs shows the last log lines.")
+        else:
+            log.info("Job %s finished in %.0f s", event["finished"], event.get("seconds") or 0)
 
     def queue(self) -> str:
         from src.publish.runner import PLATFORMS
@@ -336,7 +448,13 @@ class Handler:
         if edit_note:
             story = {k: ctx[k] for k in ("hook", "key_facts", "claims", "why_trending", "transcript")}
             story["id"] = ctx["story_id"]
-            outcome = write_script(cfg, story, brand, edit_note=edit_note, client=d.llm_client)
+            kind = str(ctx.get("kind") or "short")
+            own = formats.wanted(ctx)
+            if own.get("kind") == "script" and own.get("text"):
+                outcome = segment_script(cfg, own["text"], brand, kind, edit_note=edit_note, client=d.llm_client,
+                                         seed=int(ctx["story_id"]))
+            else:
+                outcome = write_script(cfg, story, brand, edit_note=edit_note, client=d.llm_client, kind=kind)
             final = outcome.final
             if final["status"] != "passed":
                 raise RuntimeError(f"the rewrite was rejected — {final['notes'].get('reason', 'unknown reason')}")
@@ -386,12 +504,20 @@ class Handler:
 
 
 def poll(cfg: Config, conn: sqlite3.Connection, bot: Bot, chat: str, deps: Deps | None = None,
-         once: bool = False, timeout: int = 30) -> int:
+         once: bool = False, timeout: int = 30, maintenance: Callable[[], None] | None = None) -> int:
     """Process updates until interrupted (or one batch with once=True). The offset is persisted so a
-    restart never replays a button press."""
+    restart never replays a button press. `maintenance` (the long-running bot) runs after every poll: job
+    queue, reminders."""
     handler = Handler(cfg, conn, bot, chat, deps)
     handled = 0
     while True:
+        if not once:
+            handler.maintenance()
+            if maintenance:
+                try:
+                    maintenance()
+                except Exception as exc:                    # noqa: BLE001 — never kills the poller
+                    log.warning("Maintenance failed: %s", exc)
         offset = db.get_flag(conn, "telegram_offset")
         try:
             updates = bot.updates(int(offset) if offset else None, timeout=0 if once else timeout)

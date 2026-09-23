@@ -65,6 +65,10 @@ discovery:
   trends:
     enabled: true
     geos: [SA, AE, KW, EG]         # Gulf-first (Phase 12); no SD feed (HTTP 400); US dropped (NFL roster noise)
+  wikipedia:
+    enabled: true                  # yesterday's most-viewed Arabic Wikipedia articles (keyless, Wikimedia REST)
+    lang: ar
+    top: 40
   rss:
     enabled: true
     max_items_per_feed: 20
@@ -92,7 +96,9 @@ discovery:
 
 ranking:
   weights: { view_velocity: 0.5, engagement: 0.3, recency: 0.2 }
-  top_n: 5
+  top_n: 8                         # automatic daily Shorts picks (owner's picks via the bot come on top)
+  long_top_n: 1                    # of those, how many also get a long (2–5 min) version: best evergreen/explainer
+  shortlist: 12                    # items the bot's /trending list offers for picking
   window_hours: 48                 # only candidates seen this recently are ranked
   classify_pool: 45                # unchecked items sent to the LLM per run, round-robin across sources (Phase 12)
   batch_size: 15                   # items per LLM call
@@ -115,12 +121,29 @@ ranking:
 
 extract:
   max_articles: 3                  # trends: read up to this many linked news articles
+  long_articles: 6                 # when a long video is wanted, read up to this many (Google News search adds more)
   min_article_chars: 400           # shorter extracted page text counts as unreadable
   min_source_chars: 120            # below this there's no story to distill → extract_failed
   max_prompt_chars: 12000          # source text sent to the LLM
   max_transcript_chars: 20000      # source text kept for the Phase 4 similarity gate
   whisper_model: small             # faster-whisper, CPU int8; only when a video has no subtitles
   whisper_max_seconds: 900
+
+# Formats (Phase 13/15, src/formats.py). `short` is the classic vertical Short; `long` is a landscape 2–5 min
+# YouTube video with chapters (vertical videos ≤3 min are filed as Shorts by YouTube, hence 16:9).
+# The legacy script.*/voice.*/video.* keys below still define `short`; anything here overrides.
+formats:
+  long:
+    width: 1920
+    height: 1080
+    max_seconds: 300
+    voice_max_seconds: 290
+    voice_min_seconds: 100
+    min_words: 240                 # ≈ 2.2 min at +0%
+    max_words: 520                 # ≈ 4.7 min at +0% (1.85 words/s)
+    voice_rate: "+0%"              # calmer pacing than the Shorts' +10%
+    cut_every: 8
+    hook_title_seconds: 3.0
 
 script:
   # Brief said 110–150, but measured Arabic TTS (~2.05 words/s at +10%) makes 150 words ≈ 73s.
@@ -164,6 +187,9 @@ publish:
     times: ["08:00", "13:00", "18:00", "21:00"]
     open_minutes: 150              # a window accepts one video this long after its start
   youtube_privacy: public          # public | unlisted | private
+  # Platforms that take a `long` video (Reels/Shorts APIs cap at 60–90 s); TikTok is a file export anyway.
+  long_platforms: [youtube, tiktok_export]
+  youtube_thumbnails: true         # long videos: upload the generated thumbnail (50 quota units)
   youtube_playlists: true          # add each Short to a playlist named after its series (needs the `youtube` scope)
   # SEO (Phase 12): fixed niche tags merged into every post's tags/hashtags, by story category.
   seo_tags:

@@ -16,10 +16,18 @@ from src.review.telegram import MAX_CAPTION
 ACTIONS = {"ap": "approved", "rj": "rejected", "ed": "edit", "nb": "new_broll", "rv": "revoice"}
 # Actions that don't refer to one in-review card: retry a failed publish, confirm/cancel a bulk command.
 # Bulk callbacks carry the highest in-review id the owner saw, so cards that arrive later are untouched.
-EXTRA = {"rt": "retry", "ba": "approve_all", "bs": "skip_all", "bx": "cancel"}
+EXTRA = {"rt": "retry", "ba": "approve_all", "bs": "skip_all", "bx": "cancel",
+         # the pick flow (review/picks.py): toggle item / format / platform, next, back, go, cancel
+         "pk": "pick", "pf": "pick_format", "pp": "pick_platform", "pn": "pick_next", "pb": "pick_back",
+         "pg": "pick_go", "px": "pick_cancel"}
 ROLE_AR = {"hook": "🎣 الافتتاحية", "body": "📖", "payoff": "💡 الخلاصة", "cta": "📣 الدعوة"}
 PLATFORM = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook", "tiktok_export": "TikTok"}
 COMMANDS = [
+    ("trending", "Find what's trending now and pick topics to make"),
+    ("topic", "Make a video about a topic: /topic <text>"),
+    ("script", "Voice your own script as a video: /script <text>"),
+    ("run", "Run the whole daily pipeline now"),
+    ("jobs", "What's being produced right now"),
     ("queue", "What's waiting for review or publishing"),
     ("status", "Publishing state and counts"),
     ("approve_all", "Approve every card in review (asks first)"),
@@ -29,10 +37,16 @@ COMMANDS = [
     ("report", "Send the weekly report now"),
     ("help", "What the buttons and commands do"),
 ]
-HELP = """🤖 Ra'ij review bot
+HELP = """🤖 Ra'ij bot
 
-Each card: ✅ Approve · ❌ Reject · ✏️ Edit script (reply to the prompt with what to change) · 🔁 New b-roll · 🎙 Re-voice.
-Taps are handled on the next pass (a few minutes), so the toast may say "too old" — the decision still counts.
+Make videos:
+/trending — find what's trending now, pick topics, choose 📱 Short / 🎬 Long and where to post
+/topic <text> — a video about anything (the app researches it online)
+/script <text> — voice and render your own script as written
+/run — the whole daily pipeline now (discover → pick → make → cards)
+/jobs — what's being produced, with the last log lines
+
+Review cards: ✅ Approve · ❌ Reject · ✏️ Edit script (reply to the prompt with what to change) · 🔁 New b-roll · 🎙 Re-voice.
 
 /queue — cards in review and approved videos not yet out, per platform
 /status — paused or not, counts by state
@@ -48,7 +62,7 @@ def context(conn: sqlite3.Connection, video_id: int) -> dict[str, Any]:
         "SELECT v.*, x.id AS script_id, x.brand_id, x.version, x.body_ar, x.beats, x.description_en, x.hashtags, "
         "x.similarity, x.edit_note, x.notes AS script_notes, s.id AS story_id, s.hook, s.key_facts, s.claims, "
         "s.why_trending, s.transcript, s.sources, c.id AS candidate_id, c.title, c.canonical_url, c.category, "
-        "c.rank_reason, c.source "
+        "c.rank_reason, c.source, c.wanted, x.kind "
         "FROM videos v JOIN scripts x ON x.id = v.script_id JOIN stories s ON s.id = x.story_id "
         "JOIN candidates c ON c.id = s.candidate_id WHERE v.id = ?",
         (video_id,),
@@ -108,6 +122,11 @@ def series_of(ctx: dict[str, Any]) -> str | None:
     return None
 
 
+def duration_text(seconds: float | None) -> str:
+    s = int(round(seconds or 0))
+    return f"{s}s" if s < 100 else f"{s // 60}:{s % 60:02d}"
+
+
 def age_text(started: str | None, now: datetime | None = None) -> str:
     """'3 h' / '2 d 5 h' since a UTC 'YYYY-MM-DD HH:MM:SS' timestamp."""
     hours = age_hours(started, now)
@@ -139,7 +158,10 @@ def why_line(ctx: dict[str, Any]) -> str:
     if len(reason) > WHY_MAX:
         reason = reason[:WHY_MAX - 1].rsplit(" ", 1)[0] + "…"
     src = ctx.get("source")
-    where = {"youtube": "YouTube", "reddit": "Reddit", "trends": "Google Trends", "rss": "news"}.get(src or "", src)
+    where = {"youtube": "YouTube", "reddit": "Reddit", "trends": "Google Trends", "rss": "news",
+             "wiki": "Wikipedia (most read)", "manual": None}.get(src or "", src)
+    if src == "manual":
+        return "✍️ Your request" + (f" — {reason}" if reason else "")
     head = f"🔎 Why: trending on {where}" if where else "🔎 Why"
     return head + (f" — {reason}" if reason else "")
 
@@ -160,7 +182,9 @@ def caption(ctx: dict[str, Any]) -> str:
     domains = sorted({urlsplit(u).hostname.removeprefix("www.") for u in json.loads(ctx.get("sources") or "[]")
                       if urlsplit(u).hostname})
     series = series_of(ctx)
-    head = f"🎬 #{ctx['id']} · {ctx.get('duration_s') or 0:.0f}s" + (f" · {series}" if series else "")
+    head = f"🎬 #{ctx['id']} · {duration_text(ctx.get('duration_s'))}" + (f" · {series}" if series else "")
+    if str(ctx.get("kind") or "short") == "long":
+        head += " · 🎬 Long"
     parts = [head, parent_line(ctx), title_of(ctx), why_line(ctx), ctx.get("description_en") or "", tags,
              f"Trending item: {ctx['title']}" if ctx.get("title") else ""]
     if domains:
@@ -192,8 +216,8 @@ def script_text(ctx: dict[str, Any]) -> str:
 def _rows(conn: sqlite3.Connection, statuses: tuple[str, ...]) -> list[dict[str, Any]]:
     marks = ",".join("?" * len(statuses))
     rows = conn.execute(
-        "SELECT v.id, v.status, v.notes, v.created_at, v.parent_id, x.notes AS script_notes, x.beats, x.brand_id, "
-        "s.hook, c.title, (SELECT max(decided_at) FROM approvals a WHERE a.video_id = v.id "
+        "SELECT v.id, v.status, v.notes, v.created_at, v.parent_id, v.duration_s, x.notes AS script_notes, x.beats, "
+        "x.brand_id, x.kind, s.hook, c.title, c.wanted, (SELECT max(decided_at) FROM approvals a WHERE a.video_id = v.id "
         "                  AND a.decision = 'approved') AS approved_at "
         f"FROM videos v JOIN scripts x ON x.id = v.script_id JOIN stories s ON s.id = x.story_id "
         f"JOIN candidates c ON c.id = s.candidate_id WHERE v.status IN ({marks}) ORDER BY v.id",
@@ -207,8 +231,8 @@ def in_review(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def platform_state(conn: sqlite3.Connection, cfg, video: dict[str, Any], missing: dict[str, str | None]) -> str:
     """'YouTube ✅ · Instagram ⏳ · TikTok 📲' for an approved video, one mark per wanted platform."""
-    brand = next((b for b in cfg.brands if b["id"] == video["brand_id"]), {})
-    want = brand.get("platforms") or list(PLATFORM)
+    from src.publish.runner import wanted_platforms
+    want = wanted_platforms(cfg, video) or list(PLATFORM)
     posts = {r["platform"]: dict(r) for r in conn.execute("SELECT * FROM posts WHERE video_id = ?", (video["id"],))}
     marks = []
     for p in want:

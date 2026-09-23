@@ -151,6 +151,10 @@ def install(cfg: Config, run: Run = _run, agents: Path = AGENTS) -> list[Path]:
         with path.open("wb") as f:
             plistlib.dump(spec, f)
         proc = run(["launchctl", "bootstrap", domain, str(path)])
+        if proc.returncode != 0:                                     # bootout is asynchronous: a reload can race it
+            import time
+            time.sleep(2)
+            proc = run(["launchctl", "bootstrap", domain, str(path)])
         if proc.returncode != 0:
             raise RuntimeError(f"launchctl bootstrap {label} failed: {(proc.stderr or '').strip()}")
         written.append(path)

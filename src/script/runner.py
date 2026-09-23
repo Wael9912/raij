@@ -17,24 +17,29 @@ from typing import Any
 
 import httpx
 
-from src import db, llm
+from src import db, formats, llm
 from src.config import Config
 from src.analytics.report import winners_prompt
 from src.script import titles
-from src.script.write import write_script
+from src.script.write import segment_script, write_script
 
 log = logging.getLogger("raij.script")
 
 
-def _pending(conn: sqlite3.Connection, brand_id: str) -> list[dict[str, Any]]:
+def _pending(conn: sqlite3.Connection, brand_id: str) -> list[tuple[dict[str, Any], str]]:
+    """(story, kind) pairs still to write: one script per wanted format (Phase 15) and brand."""
     rows = conn.execute(
-        "SELECT s.*, c.title, c.attempts FROM stories s JOIN candidates c ON c.id = s.candidate_id "
-        "WHERE c.status = 'extracted' "
-        "AND NOT EXISTS (SELECT 1 FROM scripts x WHERE x.story_id = s.id AND x.brand_id = ?) "
-        "ORDER BY s.id DESC",
-        (brand_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+        "SELECT s.*, c.title, c.attempts, c.wanted FROM stories s JOIN candidates c ON c.id = s.candidate_id "
+        "WHERE c.status = 'extracted' ORDER BY s.id DESC").fetchall()
+    out = []
+    for r in rows:
+        story = dict(r)
+        for kind in formats.wanted_formats(story):
+            done = conn.execute("SELECT 1 FROM scripts x WHERE x.story_id = ? AND x.brand_id = ? AND x.kind = ?",
+                                (story["id"], brand_id, kind)).fetchone()
+            if not done:
+                out.append((story, kind))
+    return out
 
 
 def _retry_later(conn: sqlite3.Connection, story: dict[str, Any], max_attempts: int) -> bool:
@@ -51,10 +56,11 @@ def _save(conn: sqlite3.Connection, story_id: int, brand_id: str, versions: list
     with conn:
         for v in versions:
             last_id = conn.execute(
-                "INSERT INTO scripts (story_id, brand_id, version, body_ar, beats, description_en, hashtags, "
-                "similarity, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (story_id, brand_id, v["version"], v["body_ar"], json.dumps(v["beats"], ensure_ascii=False),
-                 v["description_en"], json.dumps(v["hashtags"], ensure_ascii=False), v["similarity"], v["status"],
+                "INSERT INTO scripts (story_id, brand_id, version, kind, body_ar, beats, description_en, hashtags, "
+                "similarity, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (story_id, brand_id, v["version"], v.get("kind") or "short", v["body_ar"],
+                 json.dumps(v["beats"], ensure_ascii=False), v["description_en"],
+                 json.dumps(v["hashtags"], ensure_ascii=False), v["similarity"], v["status"],
                  json.dumps(v["notes"], ensure_ascii=False)),
             ).lastrowid
     return last_id
@@ -66,12 +72,12 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
     if not dry_run:
         db.expire_stale(conn, cfg.get("pipeline.max_age_days", 2))
     max_attempts = int(cfg.get("pipeline.max_attempts", 3))
-    work = [(b, s) for b in brands for s in _pending(conn, b["id"])]
+    work = [(b, s, kind) for b in brands for s, kind in _pending(conn, b["id"])]
     if dry_run:
-        log.info("[dry run] %d story×brand script(s) to write; LLM: %s", len(work),
+        log.info("[dry run] %d story×brand×format script(s) to write; LLM: %s", len(work),
                  ", ".join(llm.available_providers(cfg)) or "none configured")
-        for b, s in work:
-            log.info("[dry run] story %d → %s: %s", s["id"], b["id"], (s["hook"] or "")[:70])
+        for b, s, kind in work:
+            log.info("[dry run] story %d → %s (%s): %s", s["id"], b["id"], kind, (s["hook"] or "")[:70])
         log.info("[dry run] no LLM calls, nothing written")
         return 0
 
@@ -80,9 +86,13 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
     passed_stories: set[int] = set()
     done_stories: set[int] = set()
     winners = winners_prompt(conn) if work else ""       # last week's best hook titles as examples
-    for brand, story in work:
+    for brand, story, kind in work:
         try:
-            outcome = write_script(cfg, story, brand, client=client, winners=winners)
+            own = formats.wanted(story)
+            if own.get("kind") == "script" and own.get("text"):
+                outcome = segment_script(cfg, own["text"], brand, kind, client=client, seed=int(story["id"]))
+            else:
+                outcome = write_script(cfg, story, brand, client=client, winners=winners, kind=kind)
         except Exception as exc:                            # one bad item never kills the stage
             msg = str(exc) if isinstance(exc, llm.LLMError) else f"{type(exc).__name__}: {exc}"
             if not isinstance(exc, llm.LLMError):
@@ -101,18 +111,24 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
         done_stories.add(story["id"])
         if final["status"] == "passed":
             passed_stories.add(story["id"])
-        report.append({"script_id": script_id, "story_id": story["id"], "brand": brand["id"],
+        report.append({"script_id": script_id, "story_id": story["id"], "brand": brand["id"], "kind": kind,
                        "title": story["title"], "status": final["status"], "versions": len(outcome.versions),
                        "similarity": final["similarity"], **final["notes"], "script": final["body_ar"],
                        "beats": final["beats"], "description_en": final["description_en"],
                        "hashtags": final["hashtags"]})
         level = logging.INFO if final["status"] == "passed" else logging.WARNING
-        log.log(level, "Story %d (%s) → script %d %s: %s words, similarity %s%s", story["id"], brand["id"],
-                script_id, final["status"], final["notes"].get("words", "?"), final["similarity"],
+        log.log(level, "Story %d (%s, %s) → script %d %s: %s words, similarity %s%s", story["id"], brand["id"],
+                kind, script_id, final["status"], final["notes"].get("words", "?"), final["similarity"],
                 f" — {final['notes']['reason']}" if final["notes"].get("reason") else "")
 
     with conn:
         for story_id in done_stories:
+            # A story with two wanted formats stays 'extracted' until both scripts exist (an LLM outage on the
+            # second one must not strand it); then it is scripted if at least one passed.
+            wanted = {kind for s, kind in [(s, k) for b, s, k in work] if s["id"] == story_id}
+            have = {r[0] for r in conn.execute("SELECT DISTINCT kind FROM scripts WHERE story_id = ?", (story_id,))}
+            if wanted - have:
+                continue
             status = "scripted" if story_id in passed_stories else "script_rejected"
             conn.execute("UPDATE candidates SET status = ? WHERE id = (SELECT candidate_id FROM stories WHERE id = ?)",
                          (status, story_id))
