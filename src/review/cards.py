@@ -37,7 +37,17 @@ COMMANDS = [
     ("report", "Send the weekly report now"),
     ("help", "What the buttons and commands do"),
 ]
+# Permanent button bar under the chat input (reply keyboard): each button sends its label as a message and
+# `BUTTONS` maps it to the command. ✍️ Topic / 📝 Script first ask for the text with a reply prompt.
+BUTTONS = {"🔥 Trending": "/trending", "✍️ Topic": "/topic", "📝 Script": "/script", "▶️ Run daily": "/run",
+           "⚙️ Jobs": "/jobs", "📋 Queue": "/queue", "📊 Status": "/status", "❓ Help": "/help"}
+MAIN_KEYBOARD = {"keyboard": [[{"text": t} for t in ("🔥 Trending", "✍️ Topic", "📝 Script")],
+                              [{"text": t} for t in ("▶️ Run daily", "⚙️ Jobs", "📋 Queue")],
+                              [{"text": t} for t in ("📊 Status", "❓ Help")]],
+                 "resize_keyboard": True, "is_persistent": True, "input_field_placeholder": "Tap a button or type /"}
 HELP = """🤖 Ra'ij bot
+
+The buttons under the chat do everything below (🔥 Trending, ✍️ Topic, 📝 Script, ▶️ Run daily, ⚙️ Jobs, 📋 Queue, 📊 Status).
 
 Make videos:
 /trending — find what's trending now, pick topics, choose 📱 Short / 🎬 Long and where to post

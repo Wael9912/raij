@@ -64,7 +64,7 @@ def cmd_bot(cfg, conn, args) -> int:
     """Long-running: handle review buttons and commands from Telegram; between polls start queued production
     jobs (src/jobs.py) and send the 48/72 h reminders once an hour."""
     import time
-    from src.review.bot import ensure_commands, poll
+    from src.review.bot import ensure_commands, ensure_keyboard, poll
     from src.review.runner import make_bot, remind
     from src.review.telegram import TelegramError
     if args.dry_run:
@@ -77,6 +77,7 @@ def cmd_bot(cfg, conn, args) -> int:
         log.error("Telegram not configured: %s (see SETUP.md §4)", exc)
         return 1
     ensure_commands(conn, bot)
+    ensure_keyboard(conn, bot, chat)
     last = {"remind": 0.0}
 
     def maintenance() -> None:
@@ -164,7 +165,7 @@ def cmd_tick(cfg, conn, args) -> int:
     run when due, handle queued Telegram taps, publish approvals. Touches data/.changed when the state changed,
     so the caller knows whether to save it."""
     from src.publish.runner import publish
-    from src.review.bot import ensure_commands, poll
+    from src.review.bot import ensure_commands, ensure_keyboard, poll
     from src.review.runner import make_bot, remind
     before = conn.total_changes
     code = 0
@@ -179,6 +180,7 @@ def cmd_tick(cfg, conn, args) -> int:
             try:
                 bot, chat = make_bot(cfg)
                 ensure_commands(conn, bot)                     # slash menu, once per version (U8)
+                ensure_keyboard(conn, bot, chat)               # button bar, once per version
                 while poll(cfg, conn, bot, chat, once=True):  # drain every queued tap
                     pass
                 remind(cfg, conn, bot, chat)                   # 48 h / 72 h nudges for waiting cards (U5)

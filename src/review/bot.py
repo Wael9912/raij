@@ -44,6 +44,7 @@ from src.voice.runner import voice_script
 log = logging.getLogger("raij.review")
 
 EDIT_NOTE_TTL = 6 * 3600     # an unanswered "✏️ Edit" prompt expires: a stray text days later mustn't rewrite (S4)
+INPUT_TTL = 30 * 60          # a "✍️ Topic" / "📝 Script" prompt waits this long for the text
 
 
 @dataclass
@@ -56,6 +57,21 @@ class Deps:
     render_run: Callable = render.run_cmd
     preview_run: RunCmd = run_cmd
     extra: dict = field(default_factory=dict)
+
+
+def ensure_keyboard(conn: sqlite3.Connection, bot: Bot, chat: str) -> bool:
+    """Show the permanent button bar once per keyboard version (a reply keyboard sticks to the chat once sent)."""
+    digest = hashlib.sha256(json.dumps(cards.MAIN_KEYBOARD, sort_keys=True).encode()).hexdigest()[:12]
+    if db.get_flag(conn, "keyboard_version") == digest:
+        return False
+    try:
+        bot.send_message(chat, "🔘 Buttons are ready under the chat: 🔥 Trending · ✍️ Topic · 📝 Script · ▶️ Run daily "
+                               "· ⚙️ Jobs · 📋 Queue · 📊 Status · ❓ Help", reply_markup=cards.MAIN_KEYBOARD)
+    except TelegramError as exc:
+        log.info("Keyboard not sent (will retry): %s", exc)
+        return False
+    db.set_flag(conn, "keyboard_version", digest)
+    return True
 
 
 def ensure_commands(conn: sqlite3.Connection, bot: Bot) -> bool:
@@ -158,13 +174,50 @@ class Handler:
 
     def on_message(self, msg: dict[str, Any]) -> None:
         text = (msg.get("text") or "").strip()
+        if text in cards.BUTTONS:                          # the button bar sends its label as a message
+            cmd = cards.BUTTONS[text]
+            if cmd in ("/topic", "/script"):
+                self._ask_input(cmd)
+            else:
+                self.on_command(cmd)
+            return
         if text.startswith("/"):
             head, _, rest = text.partition(" ")
             self.on_command(head.split("@")[0].lower(), rest.strip())
             return
         if not text:
             return
+        if self._on_input(msg, text):
+            return
         self._on_note(msg, text)
+
+    # -- ✍️ Topic / 📝 Script buttons: ask for the text, then treat the reply as the command ----------
+    def _ask_input(self, cmd: str) -> None:
+        what = ("✍️ What should the video be about? Reply to this message with the topic (any language)."
+                if cmd == "/topic" else
+                "📝 Reply to this message with your full script. It is voiced exactly as written: up to 115 words "
+                "→ Short, longer → Long (up to ~520 words ≈ 4.5 min).")
+        prompt = self.bot.send_message(self.chat, what, reply_markup={"force_reply": True, "selective": True})
+        db.set_flag(self.conn, "pending_input", json.dumps({"cmd": cmd, "prompt": prompt["message_id"],
+                                                             "at": time.time()}))
+
+    def _on_input(self, msg: dict[str, Any], text: str) -> bool:
+        """True if the text answered an open ✍️/📝 prompt (a reply to it, or the only thing pending)."""
+        try:
+            pending = json.loads(db.get_flag(self.conn, "pending_input") or "null")
+        except ValueError:
+            pending = None
+        if not pending:
+            return False
+        if time.time() - float(pending.get("at") or 0) > INPUT_TTL:
+            db.set_flag(self.conn, "pending_input", "null")
+            return False
+        reply_to = (msg.get("reply_to_message") or {}).get("message_id")
+        if reply_to != pending.get("prompt") and (reply_to or self._pending()):
+            return False                                    # it's an edit note, or a reply to something else
+        db.set_flag(self.conn, "pending_input", "null")
+        self.on_command(pending["cmd"], text)
+        return True
 
     def on_command(self, cmd: str, arg: str = "") -> None:
         if cmd in ("/trending", "/run", "/topic", "/script", "/jobs", "/make"):

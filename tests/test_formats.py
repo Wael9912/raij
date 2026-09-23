@@ -677,6 +677,29 @@ def test_bot_run_trending_jobs_and_cancel(env, monkeypatch):
     assert conn.execute("SELECT count(*) FROM candidates").fetchone()[0] == 0
 
 
+def test_button_bar_maps_labels_and_asks_for_text(env):
+    cfg, conn, _ = env
+    tg = FakeTelegram()
+    assert botmod.ensure_keyboard(conn, tg.bot(), CHAT) is True
+    assert tg.last("sendMessage")["reply_markup"]["is_persistent"] is True
+    assert botmod.ensure_keyboard(conn, tg.bot(), CHAT) is False
+    h = _handler(cfg, conn, tg)
+    h.handle(_msg("🔥 Trending"))
+    assert jobs.queue(conn) == ["trending"]
+    h.handle(_msg("✍️ Topic"))
+    prompt = tg.last("sendMessage")
+    assert prompt["reply_markup"]["force_reply"] is True and "topic" in prompt["text"].lower()
+    reply = _msg("لماذا ارتفع الذهب")
+    reply["message"]["reply_to_message"] = {"message_id": tg.next_id}
+    h.handle(reply)
+    assert picks.load(conn)["kind"] == "topic" and picks.load(conn)["text"] == "لماذا ارتفع الذهب"
+    h.handle(_msg("📝 Script"))
+    h.handle(_msg(_words(200)))                             # not a reply, but the only thing pending → accepted
+    assert picks.load(conn)["kind"] == "script" and picks.load(conn)["formats"] == ["long"]
+    h.handle(_msg("just a stray text"))                     # nothing pending → ignored
+    assert db.get_flag(conn, "pending_input") == "null"
+
+
 # --- jobs ---------------------------------------------------------------------------------------
 
 def test_jobs_queue_and_inline_runner(env):
