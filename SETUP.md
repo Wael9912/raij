@@ -105,6 +105,9 @@ uv run python -m src.main --help
    - An upload costs ~1,600 quota units, so 3/day plus discovery fits in 10,000.
    - Apps in "Testing" status get refresh tokens that expire after 7 days. Publish the consent screen (no verification is needed for personal use under 100 users) to avoid re-auth.
    - Unverified API projects may have uploads locked to **private**. If that happens, request an audit via the YouTube API Services form.
+   - **Playlists (Phase 12)** need the `youtube` (manage) scope. A token authorized before 2026-09-23 has only
+     `youtube.upload`: uploads still work, playlists are skipped with a log hint. Run `youtube-auth` again, then
+     on GitHub Actions refresh the secret: `gh secret set RAIJ_YOUTUBE_TOKEN -R Wael9912/raij < data/youtube.token.json`.
 
 ---
 

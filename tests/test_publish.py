@@ -21,6 +21,7 @@ def env(tmp_path, monkeypatch):
         monkeypatch.setenv(key, "")
     cfg = load_config()
     cfg.root = tmp_path
+    cfg.data["publish"]["windows"]["times"] = []          # windows have their own tests (test_content_strategy)
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
     yield cfg, conn, tmp_path
@@ -332,8 +333,9 @@ def test_youtube_resumable_upload_in_chunks(env, monkeypatch):
                                                                     "resourceId": {"videoId": "zzz"}}}]})
         if req.method == "POST":
             meta_ = json.loads(req.content)
-            assert meta_["snippet"]["title"] == "عطل مفاجئ يضرب ميتا #Shorts"
+            assert meta_["snippet"]["title"] == "عطل مفاجئ يضرب ميتا"
             assert meta_["snippet"]["categoryId"] == "28" and "📷 Photo: Jane" in meta_["snippet"]["description"]
+            assert meta_["snippet"]["description"].rstrip().endswith("#Shorts")
             assert meta_["status"]["selfDeclaredMadeForKids"] is False
             assert req.headers["x-upload-content-length"] == "1000"
             return httpx.Response(200, headers={"Location": "https://upload.example/session1"})
@@ -364,9 +366,9 @@ def test_youtube_adopts_a_recent_upload_with_the_same_title(env, monkeypatch):
             return httpx.Response(200, json={"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UU1"}}}]})
         if req.method == "GET":
             return httpx.Response(200, json={"items": [
-                {"snippet": {"title": "عطل مفاجئ يضرب ميتا #Shorts", "publishedAt": "2020-01-01T00:00:00Z",
+                {"snippet": {"title": "عطل مفاجئ يضرب ميتا", "publishedAt": "2020-01-01T00:00:00Z",
                              "resourceId": {"videoId": "old"}}},
-                {"snippet": {"title": "عطل مفاجئ يضرب ميتا #Shorts", "publishedAt": recent,
+                {"snippet": {"title": "عطل مفاجئ يضرب ميتا", "publishedAt": recent,
                              "resourceId": {"videoId": "dup1"}}}]})
         uploads.append(req.method)
         return httpx.Response(500)
@@ -413,7 +415,7 @@ def test_youtube_authorize_loopback_flow(env):
 
     def browser(url):
         q = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
-        assert q["code_challenge_method"] == "S256" and "youtube.upload" in q["scope"]
+        assert q["code_challenge_method"] == "S256" and "auth/youtube " in q["scope"]
         threading.Thread(target=lambda: httpx.get(f"{q['redirect_uri']}/?code=C0DE&state={q['state']}")).start()
 
     def handler(req):

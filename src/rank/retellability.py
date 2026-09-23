@@ -22,6 +22,9 @@ log = logging.getLogger("raij.rank")
 _TAGS = re.compile(r"<[^>]+>")
 
 
+FORMATS = ("story", "list", "howto", "explainer", "fact")
+
+
 @dataclass
 class Verdict:
     id: int
@@ -29,6 +32,17 @@ class Verdict:
     category: str
     reason: str
     topic: str | None = None
+    audience_fit: int = 3           # 1–5 (Phase 12); a missing/malformed value is neutral
+    evergreen: bool = False
+    ad_safe: bool = True            # a missing value never rejects an item
+    format: str | None = None
+
+
+def _fit(value: Any) -> int:
+    try:
+        return min(5, max(1, int(value)))
+    except (TypeError, ValueError):
+        return 3
 
 
 def _clean(text: str | None, limit: int) -> str:
@@ -73,7 +87,12 @@ def parse_verdicts(payload: Any, ids: set[int], allowed: set[str]) -> list[Verdi
             log.debug("Dropping malformed verdict: %r", e)
             continue
         topic = re.sub(r"[^a-z0-9]+", "-", str(e.get("topic") or "").lower()).strip("-")[:60] or None
-        out.append(Verdict(cid, e["retellable"], category, str(e.get("reason") or "").strip()[:300], topic))
+        fmt = str(e.get("format") or "").strip().lower()
+        out.append(Verdict(cid, e["retellable"], category, str(e.get("reason") or "").strip()[:300], topic,
+                           audience_fit=_fit(e.get("audience_fit")),
+                           evergreen=e.get("evergreen") is True,
+                           ad_safe=e.get("ad_safe") is not False,
+                           format=fmt if fmt in FORMATS else None))
         ids.discard(cid)   # first answer per id wins
     return out
 
@@ -81,7 +100,8 @@ def parse_verdicts(payload: Any, ids: set[int], allowed: set[str]) -> list[Verdi
 def classify(cfg: Config, rows: list[dict[str, Any]], *, batch_size: int = 15,
              client: httpx.Client | None = None) -> list[Verdict]:
     """Classify rows in batches. Raises llm.LLMError only if *no* batch could be classified."""
-    categories = list(cfg.get("ranking.categories", [])) + list(cfg.get("ranking.flagged_categories", []))
+    categories = (list(cfg.get("ranking.categories", [])) + list(cfg.get("ranking.other_categories", []))
+                  + list(cfg.get("ranking.flagged_categories", [])))
     allowed = set(categories)
     verdicts: list[Verdict] = []
     last_error: llm.LLMError | None = None
@@ -90,6 +110,7 @@ def classify(cfg: Config, rows: list[dict[str, Any]], *, batch_size: int = 15,
         prompt = llm.load_prompt(
             "classify",
             categories=", ".join(categories),
+            audience=str(cfg.get("ranking.audience") or "Arabic-speaking viewers"),
             items=json.dumps([describe(r) for r in batch], ensure_ascii=False, indent=1),
         )
         try:

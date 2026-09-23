@@ -27,9 +27,13 @@ from src.publish.common import Posted, PostText, PublishError, PublishSkipped
 
 log = logging.getLogger("raij.publish")
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
+# `youtube` (manage: upload + playlists, Phase 12) superseded `youtube.upload`; a token holding only the old
+# scope still uploads, and playlists are skipped with a hint until `youtube-auth` is run again.
+SCOPES = ["https://www.googleapis.com/auth/youtube",
           "https://www.googleapis.com/auth/youtube.readonly",
           "https://www.googleapis.com/auth/yt-analytics.readonly"]
+PLAYLIST_SCOPES = ("https://www.googleapis.com/auth/youtube", "https://www.googleapis.com/auth/youtube.force-ssl")
+TITLE_MAX = 100
 AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 UPLOAD_URI = "https://www.googleapis.com/upload/youtube/v3/videos"
@@ -38,7 +42,7 @@ CHUNK = 8 * 1024 * 1024                    # multiple of 256 KiB, as the API req
 MAX_STALLS = 3                              # consecutive 308s with no progress before giving up (A12)
 # YouTube category ids by story category.
 CATEGORY_IDS = {"news-lite": "25", "tech": "28", "sports": "17", "culture": "24", "wow-facts": "27",
-                "life-hack": "26"}
+                "life-hack": "26", "money": "27", "tools": "28"}
 
 
 def secret_file(cfg: Config) -> Path:
@@ -145,10 +149,20 @@ def access_token(cfg: Config, client: httpx.Client) -> str:
 
 # --- upload --------------------------------------------------------------------
 
+def title_for(text: PostText) -> str:
+    """`{hook title} | {series}` (Phase 12 SEO: the series name is the Arabic keyword; "#Shorts" moved to the
+    description — Shorts are detected by format, and the title has only 100 characters)."""
+    title = text.title.strip()
+    if text.series and text.series not in title:
+        full = f"{title} | {text.series}"
+        if len(full) <= TITLE_MAX:
+            return full
+    return title if len(title) <= TITLE_MAX else title[:TITLE_MAX - 1] + "…"
+
+
 def metadata(cfg: Config, text: PostText) -> dict:
-    title = text.title if len(text.title) <= 90 else text.title[:89] + "…"
     return {
-        "snippet": {"title": f"{title} #Shorts", "description": f"{text.caption}\n\n#Shorts"[:4900],
+        "snippet": {"title": title_for(text), "description": f"{text.caption}\n\n#Shorts"[:4900],
                     "tags": [t.lstrip("#") for t in text.hashtags][:15],
                     "categoryId": CATEGORY_IDS.get(text.category or "", "24"),
                     "defaultLanguage": "ar", "defaultAudioLanguage": "ar"},
@@ -216,4 +230,55 @@ def publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, vide
     body = resp.json()
     if not body.get("id"):
         raise PublishError(f"YouTube upload finished without a video id: {str(body)[:200]}")
+    if cfg.get("publish.youtube_playlists", True) and text.series:
+        add_to_playlist(cfg, client, auth, body["id"], text.series)     # best effort: never fails the post
     return Posted(body["id"], f"https://youtube.com/shorts/{body['id']}")
+
+
+# --- playlists (Phase 12) --------------------------------------------------------
+
+_playlists: dict[str, str] = {}             # series title → playlist id, per process
+
+
+def has_playlist_scope(cfg: Config) -> bool:
+    try:
+        scope = json.loads(token_file(cfg).read_text(encoding="utf-8")).get("scope") or ""
+    except (OSError, ValueError):
+        return False
+    return any(s in scope.split() for s in PLAYLIST_SCOPES)
+
+
+def playlist_id(client: httpx.Client, auth: dict, title: str) -> str:
+    """The channel's playlist with this title, created if missing (1 unit to list, 50 to create)."""
+    if title in _playlists:
+        return _playlists[title]
+    items = request(client, "GET", f"{API_URI}/playlists?part=snippet&mine=true&maxResults=50",
+                    headers=auth).json().get("items", [])
+    for it in items:
+        if (it.get("snippet") or {}).get("title") == title and it.get("id"):
+            _playlists[title] = it["id"]
+            return it["id"]
+    created = request(client, "POST", f"{API_URI}/playlists?part=snippet,status", headers=auth, json={
+        "snippet": {"title": title, "defaultLanguage": "ar"}, "status": {"privacyStatus": "public"}}).json()
+    if not created.get("id"):
+        raise PublishError(f"playlist '{title}' was not created: {str(created)[:200]}")
+    _playlists[title] = created["id"]
+    return created["id"]
+
+
+def add_to_playlist(cfg: Config, client: httpx.Client, auth: dict, video_id: str, series: str) -> bool:
+    """Put the uploaded Short in the playlist named after its series (50 units). Missing scope or any API
+    error only logs — the video is already public."""
+    if not has_playlist_scope(cfg):
+        log.warning("Playlist skipped: the YouTube token lacks the `youtube` scope — run "
+                    "`uv run python -m src.main youtube-auth` again and update RAIJ_YOUTUBE_TOKEN")
+        return False
+    try:
+        pid = playlist_id(client, auth, series)
+        request(client, "POST", f"{API_URI}/playlistItems?part=snippet", headers=auth, json={
+            "snippet": {"playlistId": pid, "resourceId": {"kind": "youtube#video", "videoId": video_id}}})
+    except (FetchError, PublishError, ValueError, KeyError) as exc:
+        log.warning("Couldn't add %s to playlist '%s': %s", video_id, series, exc)
+        return False
+    log.info("Added %s to playlist '%s'", video_id, series)
+    return True

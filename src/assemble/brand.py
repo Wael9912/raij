@@ -182,13 +182,15 @@ def hook_sequence(title: str, series: str | None, out_dir: Path, seconds: float,
     return lst
 
 
-def endcard(brand: dict[str, Any], out: Path, series: str | None = None) -> Path:
-    """Closing card: wordmark, series badge, follow prompt."""
+def endcard(brand: dict[str, Any], out: Path, series: str | None = None, cta: str | None = None) -> Path:
+    """Closing card: wordmark, series badge, closing line (`cta`, rotated per series in Phase 12)."""
     img = Image.new("RGBA", (W, H), INK)
     parts = [text_image(brand.get("name") or brand["id"], 260, fill=YELLOW)]
     if series:
         parts.append(pill(series, 64))
-    parts.append(text_image("تابعنا للمزيد", 88, fill=WHITE))
+    line = cta or "تابعنا للمزيد"
+    size = 88 if len(line) <= 18 else 68                       # longer lines still fit the width
+    parts.append(text_image(line, size, fill=WHITE))
     gap = 70
     y = (H - sum(p.height for p in parts) - gap * (len(parts) - 1)) // 2 - 60
     for p in parts:

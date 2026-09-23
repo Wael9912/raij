@@ -52,6 +52,9 @@ def _entry(row: dict[str, Any], parts: dict[str, float] | None = None) -> dict[s
         "category": row["category"],
         "topic": row.get("topic"),
         "score": row["score"],
+        "audience_fit": row.get("audience_fit"),
+        "evergreen": row.get("evergreen"),
+        "format": row.get("format"),
         "reason": row["rank_reason"],
     }
     if parts:
@@ -59,11 +62,58 @@ def _entry(row: dict[str, Any], parts: dict[str, float] | None = None) -> dict[s
     return out
 
 
+def screen_pool(scored: list, by_id: dict[int, dict[str, Any]], size: int) -> list[dict[str, Any]]:
+    """Unchecked candidates to send to the LLM: round-robin across sources in score order, so a source with
+    no velocity signal (RSS sits at a flat ≈0.59) still gets screened next to the top Trends terms (D: the
+    tech/wow-facts/life-hack feeds never reached the model when the pool was the plain top-30)."""
+    queues: dict[str, list[dict[str, Any]]] = {}
+    for s in scored:
+        row = by_id[s.id]
+        if row["retellable"] is None:
+            queues.setdefault(row["source"], []).append(row)
+    out: list[dict[str, Any]] = []
+    while len(out) < size and any(queues.values()):
+        for source in list(queues):
+            if queues[source] and len(out) < size:
+                out.append(queues[source].pop(0))
+    return out
+
+
+class Weights:
+    """Selection multipliers (Phase 12): category, region, audience fit, evergreen — all from `ranking.*`."""
+
+    def __init__(self, cfg: Config | None = None):
+        get = cfg.get if cfg else (lambda key, default=None: default)
+        self.category = {str(k): float(v) for k, v in (get("ranking.category_weights", {}) or {}).items()}
+        self.region = {str(k).upper(): float(v) for k, v in (get("ranking.region_weights", {}) or {}).items()}
+        self.region_default = float(get("ranking.region_default_weight", 1.0))
+        self.fit = float(get("ranking.fit_weight", 0.0))
+        self.evergreen = float(get("ranking.evergreen_bonus", 0.0))
+
+    def region_weight(self, region: str | None) -> float:
+        codes = [c.strip().upper() for c in (region or "").split(",") if c.strip()]
+        if not codes or not self.region:
+            return 1.0
+        return max(self.region.get(c, self.region_default) for c in codes)
+
+    def factor(self, row: dict[str, Any]) -> float:
+        f = self.category.get(row.get("category") or "", 1.0) * self.region_weight(row.get("region"))
+        fit = row.get("audience_fit")
+        if fit is not None and self.fit:
+            f *= 1 + self.fit * (int(fit) - 3)
+        if row.get("evergreen") and self.evergreen:
+            f *= 1 + self.evergreen
+        return max(f, 0.0)
+
+
 def pick(rows: list[dict[str, Any]], need: int, categories: set[str], max_per_category: int,
-         already: list[dict[str, Any]] | None = None, boost: dict[str, float] | None = None) -> list[dict[str, Any]]:
+         already: list[dict[str, Any]] | None = None, boost: dict[str, float] | None = None,
+         weights: Weights | None = None) -> list[dict[str, Any]]:
     """Highest-scoring retellable rows: at most max_per_category per category and one per topic,
-    counting what was `already` selected today. `boost` multiplies scores by category (recent winners)."""
+    counting what was `already` selected today. `boost` multiplies scores by category (recent winners);
+    `weights` applies the niche/region/fit multipliers. Items the screen marked not ad-safe never qualify."""
     boost = boost or {}
+    weights = weights or Weights()
     counts: dict[str, int] = {}
     topics: set[str] = set()
     for r in already or []:
@@ -71,10 +121,13 @@ def pick(rows: list[dict[str, Any]], need: int, categories: set[str], max_per_ca
         if r.get("topic"):
             topics.add(r["topic"])
     chosen = []
-    for r in sorted(rows, key=lambda r: (r["score"] or 0) * boost.get(r["category"], 1.0), reverse=True):
+    for r in sorted(rows, key=lambda r: (r["score"] or 0) * boost.get(r["category"], 1.0) * weights.factor(r),
+                    reverse=True):
         if len(chosen) >= need:
             break
         if r["retellable"] != 1 or r["status"] != "ranked" or r["category"] not in categories:
+            continue
+        if r.get("ad_safe") == 0:
             continue
         if counts.get(r["category"], 0) >= max_per_category or (r.get("topic") and r["topic"] in topics):
             continue
@@ -101,7 +154,7 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
     rows = _pool(conn, window)
     scored = score_rows(rows, cfg.get("ranking.weights", {}), now=now)
     by_id = {r["id"]: r for r in rows}
-    to_check = [by_id[s.id] for s in scored if by_id[s.id]["retellable"] is None][:pool_size]
+    to_check = screen_pool(scored, by_id, pool_size)
     already = _selected_today(conn, day)
     need = max(top_n - len(already), 0)
 
@@ -134,14 +187,21 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
             status = "failed"
         flagged_cats = set(cfg.get("ranking.flagged_categories", []))
         for v in verdicts:
-            new_status = "flagged" if v.category in flagged_cats else ("ranked" if v.retellable else "rejected")
+            if v.category in flagged_cats:
+                new_status = "flagged"
+            elif not v.retellable or not v.ad_safe:       # not advertiser-friendly → never selected (D)
+                new_status = "rejected"
+            else:
+                new_status = "ranked"
             conn.execute(
-                "UPDATE candidates SET retellable = ?, category = ?, rank_reason = ?, topic = ?, status = ? "
-                "WHERE id = ?",
-                (int(v.retellable), v.category, v.reason, v.topic, new_status, v.id),
+                "UPDATE candidates SET retellable = ?, category = ?, rank_reason = ?, topic = ?, status = ?, "
+                "audience_fit = ?, evergreen = ?, ad_safe = ?, format = ? WHERE id = ?",
+                (int(v.retellable), v.category, v.reason, v.topic, new_status,
+                 v.audience_fit, int(v.evergreen), int(v.ad_safe), v.format, v.id),
             )
-            by_id[v.id].update(retellable=int(v.retellable), category=v.category,
-                               rank_reason=v.reason, topic=v.topic, status=new_status)
+            by_id[v.id].update(retellable=int(v.retellable), category=v.category, rank_reason=v.reason,
+                               topic=v.topic, status=new_status, audience_fit=v.audience_fit,
+                               evergreen=int(v.evergreen), ad_safe=int(v.ad_safe), format=v.format)
         notes["screened"] = len(verdicts)
         if status == "ok" and len(verdicts) < len(to_check):
             status = "partial"
@@ -150,7 +210,7 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
     boost = winner_boost(conn, cfg.get("ranking.winner_boost", 0.15))
     if boost:
         log.info("Recent winners boost categories: %s", ", ".join(sorted(boost)))
-    chosen = pick(list(by_id.values()), need, categories, max_per_cat, already, boost=boost)
+    chosen = pick(list(by_id.values()), need, categories, max_per_cat, already, boost=boost, weights=Weights(cfg))
     stamp = local.strftime("%Y-%m-%d %H:%M:%S")            # local time, so substr(…,10) is the selection day
     for r in chosen:
         conn.execute("UPDATE candidates SET status = 'selected', selected_at = ? WHERE id = ?", (stamp, r["id"]))

@@ -8,6 +8,8 @@ Retries back off (publish.retry_after_hours, default 1 h / 6 h / 24 h from the l
 ticks in a row can't burn every attempt during one 30-minute outage (A8).
 Published/exported posts are never redone. A platform without keys is skipped (no row), so adding keys
 later picks up approved videos — unless they're older than publish.max_age_hours (trends go stale).
+Posting windows (Phase 12, `publish.windows`): a video's *first* upload waits for an open window and each window
+takes one video (oldest approval first); a video already partly out finishes its platforms whenever due.
 When every platform is done, the video becomes 'published'. An approved video older than max_age_hours
 is closed (`finalize`): 'published' if anything went out (skipped platforms noted), else 'expired' — so
 missing keys or dead retries can't keep it, and its media, in the state bundle forever (A3).
@@ -20,6 +22,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -28,7 +31,7 @@ from src.assemble.render import guard
 from src.config import Config
 from src.discover.common import FetchError, make_client
 from src.lock import Busy, single
-from src.publish import meta, tiktok, youtube
+from src.publish import meta, tiktok, windows, youtube
 from src.publish.common import Posted, PostText, PublishError, PublishSkipped, post_text
 
 log = logging.getLogger("raij.publish")
@@ -139,8 +142,13 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
             _notify(cfg, [f"⏸ Publishing is paused — {len(videos)} approved video(s) waiting."], bot)
             db.set_flag(conn, "paused_notice_sent", "1")
         return 0
+    gated = windows.enabled(cfg)
+    window = windows.current(cfg) if gated else None
+    slot_taken = bool(window and windows.taken(conn, window))
     if dry_run:
         log.info("[dry run] %d approved video(s) to publish", len(videos))
+        if gated:
+            log.info("[dry run] posting window: %s", _window_text(cfg, window, slot_taken))
         for name, why in missing.items():
             log.info("[dry run] %s: %s", name, f"skipped — {why}" if why else "ready")
         for v in videos:
@@ -153,13 +161,19 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
     # (keeps idle GitHub Actions ticks from re-saving the state).
     run_id = None
     done, failed, skipped, notices, retries = [], [], set(), [], []
+    waiting = 0
     own_client = client is None
     client = client or make_client()
     try:
         for v in videos:
+            if gated and not windows.started(conn, v["id"]):
+                if window is None or slot_taken:
+                    waiting += 1
+                    continue
             path = guard(cfg, Path(v["video_path"]))           # only our own rendered output leaves the machine
-            text = post_text(v)
+            text = post_text(v, cfg)
             want = [p for p in _brand(cfg, v["brand_id"]).get("platforms", list(platforms)) if p in platforms]
+            first = not windows.started(conn, v["id"])
             for name in want:
                 if missing[name]:
                     skipped.add(name)
@@ -195,6 +209,8 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                              (res.status, res.external_id, res.url, post["id"]))
                 conn.commit()
                 done.append({"video_id": v["id"], "platform": name, "url": res.url})
+                if gated and first:
+                    slot_taken = True                        # this window's one video went out
                 notices.append(f"{'📲' if res.status == 'exported' else '✅'} {_label(v)}\n"
                                f"{PLATFORM_NAME.get(name, name)}: {_link(name, res)}")
                 log.info("Video %d → %s %s: %s", v["id"], name, res.status, res.url)
@@ -209,6 +225,8 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
 
     for name in sorted(skipped):
         log.info("%s skipped: %s", name, missing[name])
+    if waiting:
+        log.info("%d approved video(s) wait for a posting window — %s", waiting, _window_text(cfg, window, slot_taken))
     closed = finalize(cfg, conn, cfg.get("publish.max_age_hours", 72), platforms=platforms)
     notices += [f"🏁 #{vid} closed as {status} (older than {cfg.get('publish.max_age_hours', 72)} h)"
                 for vid, status in closed]
@@ -225,6 +243,14 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
     log.log(level, "Publish %s: %d post(s) done, %d failed, %d video(s) eligible", status, len(done), len(failed),
             len(videos))
     return 1 if status == "failed" else 0
+
+
+def _window_text(cfg: Config, window: windows.Window | None, taken: bool) -> str:
+    tz = str(cfg.get("publish.windows.timezone") or cfg.get("schedule.timezone") or "UTC")
+    if window is None:
+        nxt = windows.next_start(cfg)
+        return f"none open now; next opens {nxt.astimezone(ZoneInfo(tz)):%H:%M} {tz}" if nxt else "none configured"
+    return f"{window.label} {tz} open" + (" (already used)" if taken else " (free)")
 
 
 def finalize(cfg: Config, conn: sqlite3.Connection, max_age_hours: float | None, dry_run: bool = False,

@@ -129,7 +129,9 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     title = script_notes.get("hook_title")
     hook_s = float(cfg.get("video.hook_title_seconds", 2.5)) if title else 0.0
     subs_list = subtitles.render_sequence(timing["words"], spans, work, total, renderer, hide_until=hook_s)
-    card = brand.endcard(look, work / "endcard.png", series)
+    from src.script.write import cta_line
+    cta = cta_line(look, series, video["id"])
+    card = brand.endcard(look, work / "endcard.png", series, cta)
     music = _music(cfg, video["id"])
     plan = render.Plan(segments, Path(video["voice_path"]), subs_list, renderer.style.top, card, endcard_s,
                        out_dir / f"{video['id']}.mp4", music=music,
@@ -145,7 +147,7 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     return {"video_path": str(plan.out.relative_to(cfg.root)), "subtitle_path": str(srt_path.relative_to(cfg.root)),
             "duration_s": plan.total, "manifest": manifest,
             "notes": {"voice_s": voice_s, "music": str(music) if music else None, "clips": len(manifest),
-                      "credits": credits, "hook_title": title, "series": series}}
+                      "credits": credits, "hook_title": title, "series": series, "cta": cta}}
 
 
 def _fail(conn: sqlite3.Connection, video: dict[str, Any], reason: str) -> None:

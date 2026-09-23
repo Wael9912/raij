@@ -2,6 +2,8 @@ You screen trending items for an Arabic short-video channel. We never reuse the 
 video, images, or audio: we retell the item as a NEW 45–60 second Arabic voiceover over generic
 stock footage. Decide for each item whether its value survives that retelling.
 
+Our audience: {{audience}}.
+
 RETELLABLE (true): a story, news event, surprising facts, a list, a how-to or tip, a discovery,
 a record, a product/tech announcement — anything whose interest lives in the information.
 NOT RETELLABLE (false): dances, memes, visual gags, pranks, music videos, trailers, reaction
@@ -10,8 +12,23 @@ with no discernible story, paywalled teasers with no facts, or anything unsafe f
 audience.
 
 Pick exactly one category per item from: {{categories}}
+- "tech": technology, AI, science-of-tech, companies, launches, chips, space tech.
+- "money": economy, wealth, salaries, prices, startups, markets, business moves, personal finance.
+- "wow-facts": surprising science, nature, history, records, discoveries, "did you know".
+- "life-hack": practical tips and how-tos for everyday life, health habits, productivity.
+- "tools": a specific app, gadget, website or AI tool the viewer can use today (what it does, for whom).
 Use "political" for elections, governments, parties, wars, armed conflict, protests,
 sanctions, or politicians — even if the item is otherwise retellable.
+
+For each item also judge:
+- "audience_fit": 1–5 — how much OUR audience would care (5 = they'd share it; 1 = local to another
+  country or niche they never follow, e.g. American football rosters, US college sports, local US weather).
+- "evergreen": true if it stays interesting a month from now (facts, how-tos, tools), false if it's
+  only news of the day.
+- "ad_safe": false when death, illness, tragedy, crime, war casualties, sexual content, gambling,
+  drugs, alcohol, weapons, hate or graphic content is the point of the story (not a passing mention) —
+  advertisers skip those; true otherwise.
+- "format": one of "story", "list", "howto", "explainer", "fact".
 
 Write "reason" in English, one short sentence, saying why it does or doesn't retell well.
 Write "topic" as a short lowercase English slug naming the underlying story or subject, e.g.
@@ -22,4 +39,5 @@ Items (JSON):
 {{items}}
 
 Respond with JSON only, in exactly this shape, with one entry per input id:
-{"items": [{"id": 123, "retellable": true, "category": "tech", "topic": "new-chip-launch", "reason": "..."}]}
+{"items": [{"id": 123, "retellable": true, "category": "tech", "topic": "new-chip-launch",
+            "audience_fit": 4, "evergreen": false, "ad_safe": true, "format": "story", "reason": "..."}]}

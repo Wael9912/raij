@@ -4,26 +4,51 @@ brands:
   - id: raij
     name: "رائج"
     language: ar
-    tone: "Sudanese-friendly, MSA-lean, warm and curious"
+    # Phase 12 (owner's call, D2/D3): Gulf-first market, MSA with a light Gulf touch, Saudi voice.
+    tone: "Gulf-friendly, Modern Standard Arabic with a light Gulf touch, warm and curious"
     voice:
-      name: ar-EG-ShakirNeural
-      alt: ar-SA-HamedNeural       # used by the review bot's 🎙 Re-voice button
+      name: ar-SA-HamedNeural
+      alt: ar-EG-ShakirNeural      # used by the review bot's 🎙 Re-voice button
       rate: "+10%"                 # Shorts pacing; Arabic neural voices speak ~1.85 words/s at +0%
       pitch: "+0Hz"
     subtitle_font: "Cairo Black"   # assets/fonts/Cairo-Variable.ttf, shaped by raqm
     # Series badge shown with the hook title and on the end card, by story category. The script
     # LLM may pick another name from this list when it fits better.
     series:
-      wow-facts: "هل تعلم؟"
       tech: "عالم التقنية"
+      money: "أرقام تهمك"
+      wow-facts: "هل تعلم؟"
+      life-hack: "حيلة اليوم"
+      tools: "أداة اليوم"          # apps, gadgets, AI tools — affiliate slot arrives in Phase 14 (D4)
       sports: "رياضة في دقيقة"
       culture: "حكايات"
       news-lite: "رائج اليوم"
-      life-hack: "حيلة اليوم"
+    # Closing line: spoken CTA spirit for the script prompt and the end-card text, rotated per video
+    # (Phase 12). Keyed by series name; "default" covers the rest.
+    cta:
+      default:
+        - "تابعنا للمزيد"
+        - "شاركها مع صديق يهمه الموضوع"
+        - "اكتب رأيك في التعليقات"
+      "عالم التقنية":
+        - "تابعنا لتعرف الجديد قبل الجميع"
+        - "شاركها مع صديق يحب التقنية"
+      "أرقام تهمك":
+        - "احفظها وارجع لها لاحقا"
+        - "شاركها مع صديق يهتم بالفلوس"
+      "هل تعلم؟":
+        - "شاركها مع شخص لا يعرفها"
+        - "تابعنا لمعلومة جديدة كل يوم"
+      "حيلة اليوم":
+        - "جربها وقل لنا النتيجة"
+        - "احفظها قبل أن تنساها"
+      "أداة اليوم":
+        - "الرابط في الوصف"
+        - "جربها وقل لنا رأيك"
     platforms: [instagram, facebook, youtube, tiktok_export]
 
 discovery:
-  regions: [SD, EG, SA, US]
+  regions: [SA, AE, EG, SD]
   youtube:
     enabled: true
     # Units/day for discovery. The project's 10,000/day is shared with Shorts uploads
@@ -39,32 +64,54 @@ discovery:
     limit_per_sub: 25
   trends:
     enabled: true
-    geos: [EG, SA, US]             # Google Trends has no trending feed for SD (HTTP 400)
+    geos: [SA, AE, KW, EG]         # Gulf-first (Phase 12); no SD feed (HTTP 400); US dropped (NFL roster noise)
   rss:
     enabled: true
     max_items_per_feed: 20
     # Plain URLs or {url, region, name}. Examples:
     #   - {url: "https://feeds.bbci.co.uk/arabic/rss.xml", region: SD, name: "BBC Arabic"}
     #   - https://www.youtube.com/feeds/videos.xml?channel_id=<CHANNEL_ID>
-    # Keyless defaults so discovery works before any API keys are set.
+    # Keyless defaults so discovery works before any API keys are set. Phase 12 set: Gulf Arabic news,
+    # money and tech first, then English tech/tools/science/life-hack sources for the niche (all verified
+    # 2026-09-23; Al Arabiya, Argaam, CNBC Arabia, Maaal block bots or have no feed; Arab News answers httpx
+    # with a Cloudflare challenge). Region AR = pan-Arab.
     feeds:
-      - {url: "https://feeds.bbci.co.uk/arabic/rss.xml", region: SD, name: "BBC Arabic"}
       - {url: "https://www.skynewsarabia.com/rss", region: SA, name: "Sky News Arabia"}
+      - {url: "https://www.skynewsarabia.com/web/rss/technology.xml", region: SA, name: "Sky News Arabia Tech"}
+      - {url: "https://www.skynewsarabia.com/web/rss/business.xml", region: SA, name: "Sky News Arabia Business"}
+      - {url: "https://aawsat.com/feed/economy", region: SA, name: "Asharq Al-Awsat Economy"}
       - {url: "https://aitnews.com/feed/", region: SA, name: "AIT News"}
-      - {url: "https://feeds.bbci.co.uk/news/technology/rss.xml", region: US, name: "BBC Technology"}
-      - {url: "https://feeds.arstechnica.com/arstechnica/index", region: US, name: "Ars Technica"}
+      - {url: "https://feeds.bbci.co.uk/arabic/science_and_tech/rss.xml", region: AR, name: "BBC Arabic Science & Tech"}
+      - {url: "https://techcrunch.com/feed/", region: US, name: "TechCrunch"}
+      - {url: "https://www.theverge.com/rss/index.xml", region: US, name: "The Verge"}
+      - {url: "https://www.technologyreview.com/feed/", region: US, name: "MIT Technology Review"}
       - {url: "https://www.sciencedaily.com/rss/top/science.xml", region: US, name: "ScienceDaily"}
+      - {url: "https://www.livescience.com/feeds/all", region: US, name: "Live Science"}
+      - {url: "https://lifehacker.com/feed/rss", region: US, name: "Lifehacker"}
+      - {url: "https://www.makeuseof.com/feed/", region: US, name: "MakeUseOf"}
 
 ranking:
   weights: { view_velocity: 0.5, engagement: 0.3, recency: 0.2 }
   top_n: 5
   window_hours: 48                 # only candidates seen this recently are ranked
-  classify_pool: 30                # top-scored unchecked items sent to the LLM per run
+  classify_pool: 45                # unchecked items sent to the LLM per run, round-robin across sources (Phase 12)
   batch_size: 15                   # items per LLM call
   max_per_category: 2              # keep the daily picks varied
-  categories: [news-lite, tech, life-hack, sports, culture, wow-facts]
+  # Phase 12 niche (owner's call, D1): only these categories are ever selected …
+  categories: [tech, money, wow-facts, life-hack, tools]
+  # … these are still recognised by the screen so the model has an honest label; they're kept as `ranked`
+  # but never picked.
+  other_categories: [news-lite, sports, culture]
   flagged_categories: [political]  # never auto-scheduled
   winner_boost: 0.15               # score ×1.15 for categories of last week's best videos (0 = off)
+  # Who the screen judges audience_fit for (Phase 12, D2).
+  audience: "Arabic-speaking viewers in Saudi Arabia and the Gulf (also Egypt and Sudan): curious, mobile-first, 18–35"
+  # Selection multipliers (Phase 12): score × category × region × fit × evergreen × winner boost.
+  category_weights: { tech: 1.0, money: 1.0, wow-facts: 1.05, life-hack: 1.05, tools: 1.0 }
+  region_weights: { SA: 1.0, AE: 1.0, KW: 0.95, QA: 0.95, BH: 0.95, OM: 0.95, AR: 0.95, EG: 0.85, SD: 0.8, US: 0.75 }
+  region_default_weight: 0.75
+  fit_weight: 0.15                 # × (1 + fit_weight × (audience_fit − 3)): fit 5 → ×1.3, fit 1 → ×0.7
+  evergreen_bonus: 0.1             # × 1.1 for evergreen items (helps the starved wow-facts / life-hack series)
 
 extract:
   max_articles: 3                  # trends: read up to this many linked news articles
@@ -109,7 +156,23 @@ publish:
   retry_after_hours: [1, 6, 24]    # backoff from the last failed attempt (A8); ticks in between skip it
   every_minutes: 30                # launchd publish job interval (install-services)
   max_age_hours: 72                # approvals older than this aren't published (trends go stale)
+  # Posting windows (Phase 12): a video's first upload happens only inside a window, one video per window,
+  # oldest approval first. A video already partly out finishes its other platforms whenever they're due.
+  # `times: []` = publish as soon as approved (pre-12 behaviour).
+  windows:
+    timezone: Asia/Riyadh          # Gulf-first (D2)
+    times: ["08:00", "13:00", "18:00", "21:00"]
+    open_minutes: 150              # a window accepts one video this long after its start
   youtube_privacy: public          # public | unlisted | private
+  youtube_playlists: true          # add each Short to a playlist named after its series (needs the `youtube` scope)
+  # SEO (Phase 12): fixed niche tags merged into every post's tags/hashtags, by story category.
+  seo_tags:
+    tech: ["تقنية", "ذكاء_اصطناعي", "تكنولوجيا", "tech", "AI"]
+    money: ["اقتصاد", "مال", "أعمال", "استثمار", "business"]
+    wow-facts: ["هل_تعلم", "معلومات", "حقائق", "علوم", "facts"]
+    life-hack: ["حيل", "نصائح", "حيلة", "lifehack", "tips"]
+    tools: ["أدوات", "تطبيقات", "ذكاء_اصطناعي", "apps", "AItools"]
+    default: ["رائج", "شورتس", "السعودية", "الخليج", "Shorts"]
   meta_graph_version: v25.0        # Graph API version for IG/FB Reels
   poll_seconds: 5                  # Instagram container processing poll
   poll_timeout_seconds: 600

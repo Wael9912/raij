@@ -214,8 +214,9 @@ def test_rank_selects_top_retellable(env, monkeypatch):
 
     report = _report(tmp)                                             # never printed: Actions logs are public (S5)
     titles = [s["title"] for s in report["selected"]]
-    assert len(titles) == 5
+    assert len(titles) == 4                                           # only 4 candidates are in the niche
     assert "dance" not in titles and "vote" not in titles             # not retellable / political
+    assert "goal" not in titles                                       # sports: recognised but never picked (Phase 12)
     assert sum(1 for t in titles if t in ("chip", "gpu", "phone")) == 2   # max_per_category
     assert "phone" not in titles                                      # same topic as "gpu"
     assert all(s["reason"] and s["score_parts"] for s in report["selected"])
@@ -223,11 +224,11 @@ def test_rank_selects_top_retellable(env, monkeypatch):
     assert json.loads((tmp / f"{report['date']}.json").read_text()) == report
 
     status = dict(conn.execute("SELECT title, status FROM candidates").fetchall())
-    assert status["dance"] == "rejected" and status["vote"] == "flagged"
+    assert status["dance"] == "rejected" and status["vote"] == "flagged" and status["goal"] == "ranked"
     run = conn.execute("SELECT status FROM runs WHERE command = 'rank'").fetchone()
-    assert run["status"] == "ok"
+    assert run["status"] == "partial"                                 # 4/5 picks
 
-    # Same day again: no new LLM calls, same five picks.
+    # Same day again: no new LLM calls, same four picks.
     assert runner.rank(cfg, conn, client=client, out_dir=tmp) == 0
     assert len(calls) == 2
     assert [s["title"] for s in _report(tmp)["selected"]] == titles

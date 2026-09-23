@@ -49,6 +49,7 @@ class Draft:
     hashtags: list[str]
     hook_title: str | None = None         # on-screen headline (assemble); None → video has no title card
     series: str | None = None             # model's series pick; assemble keeps it only if it's a brand series
+    hook_title_alt: str | None = None     # second headline for the A/B test across platforms (Phase 12)
 
     @property
     def body_ar(self) -> str:
@@ -100,9 +101,12 @@ def validate(data: Any, min_words: int, max_words: int) -> Draft:
         raise DraftError(f"beats out of order: {roles}")
     tags = [t if t.startswith("#") else f"#{t}" for t in (str(t).strip().replace(" ", "_")
                                                            for t in data.get("hashtags") or []) if t.strip("#")]
-    draft = Draft(beats, str(data.get("description_en") or "").strip(), tags[:8],
-                  clean_title(data.get("hook_title"), hook=beats[0]["text"]),
-                  str(data.get("series") or "").strip() or None)
+    title = clean_title(data.get("hook_title"), hook=beats[0]["text"])
+    alt = clean_title(data.get("hook_title_alt"), hook=beats[0]["text"])
+    if alt and title and similarity.normalize(alt) == similarity.normalize(title):
+        alt = None                                     # a copy of A is no B
+    draft = Draft(beats, str(data.get("description_en") or "").strip(), tags[:8], title,
+                  str(data.get("series") or "").strip() or None, alt)
     if draft.words < min_words:
         raise DraftError(f"script is {draft.words} words — too short; add about "
                          f"{min_words + 10 - draft.words} words", draft)
@@ -129,6 +133,24 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"  • {i}" for i in items) or "  • (none)"
 
 
+def cta_line(brand: dict[str, Any], series: str | None, seed: int = 0) -> str:
+    """The closing line for a series, rotated by `seed` (story or video id) through `brands[].cta` (Phase 12).
+    Falls back to the brand's default list, then to the classic "تابعنا للمزيد"."""
+    ctas = brand.get("cta") or {}
+    options = [str(c) for c in (ctas.get(series or "") or ctas.get("default") or []) if str(c).strip()]
+    if not options:
+        return "تابعنا للمزيد"
+    return options[int(seed) % len(options)]
+
+
+def series_lines(brand: dict[str, Any], seed: int = 0) -> str:
+    """Series names with their closing-line spirit, for the script prompt."""
+    names = list(dict.fromkeys((brand.get("series") or {}).values()))
+    if not names:
+        return "  (none — omit \"series\")"
+    return "\n".join(f'  • "{n}" — closing line like: "{cta_line(brand, n, seed)}"' for n in names)
+
+
 def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str = "", winners: str = "") -> str:
     claims = [f"{c.get('claim')} ({c.get('source') or 'source'})" for c in json.loads(story.get("claims") or "[]")]
     return llm.load_prompt(
@@ -142,7 +164,7 @@ def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extr
         # Aim inside the accepted range: models tend to undershoot word counts.
         target_min=str(cfg.get("script.min_words", 85) + 10),
         target_max=str(cfg.get("script.max_words", 115) - 10),
-        series=" / ".join(f'"{v}"' for v in (brand.get("series") or {}).values()) or "(none — omit it)",
+        series=series_lines(brand, int(story.get("id") or 0)),
         extra=f"\n{extra.strip()}\n" if extra.strip() else "",
         winners=f"\n{winners.strip()}\n" if winners.strip() else "",
     )
@@ -169,7 +191,8 @@ def draft(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str 
 
 
 def _row(d: Draft, sim: float | None, status: str, version: int, notes: dict[str, Any]) -> dict[str, Any]:
-    look = {k: v for k, v in (("hook_title", d.hook_title), ("series", d.series)) if v}
+    look = {k: v for k, v in (("hook_title", d.hook_title), ("hook_title_alt", d.hook_title_alt),
+                              ("series", d.series)) if v}
     return {"version": version, "body_ar": d.body_ar, "beats": d.beats, "description_en": d.description_en,
             "hashtags": d.hashtags, "similarity": sim, "status": status,
             "notes": {"words": d.words, **look, **notes}}

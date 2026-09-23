@@ -18,12 +18,14 @@ Structure, as ordered beats:
    surprising fact — not a greeting, not the channel name.
 2. "body": 2–4 beats, one idea each, building the story with the key facts.
 3. "payoff": 1 beat — the takeaway, twist, or why it matters.
-4. "cta": 1 short line inviting a comment or a follow, tied to the story.
+4. "cta": 1 short line tied to the story, in the spirit of the closing line for the series you pick
+   (see the series list below) — say it in your own words, don't append the channel name.
 
 Language rules:
-- Modern Standard Arabic that sounds natural and warm when spoken, easy for Sudanese, Egyptian and
-  Gulf listeners alike. At most one light colloquial touch, in the hook or CTA only — the body stays
-  MSA. Short sentences. No diacritics. No emojis or hashtags in the script.
+- Modern Standard Arabic that sounds natural and warm when spoken, easy for Gulf, Egyptian and
+  Sudanese listeners alike. At most one light Gulf colloquial touch (e.g. "وايد", "زين", "ترى"), in the
+  hook or CTA only — the body stays MSA. Short sentences. No diacritics. No emojis or hashtags in
+  the script.
 - Spell every word correctly and use only Arabic letters (plus digits and Latin brand names if
   needed). Translate sports and technical roles accurately (quarterback = لاعب الوسط الظهير / كوارترباك).
 - Keep names exact; give well-known foreign names their usual Arabic spelling.
@@ -45,7 +47,11 @@ as on English Wikipedia (e.g. "Gianni Infantino"). We then show a licensed photo
 
 Also write "hook_title": the big on-screen headline shown over the first 2 seconds — 2 to 6 Arabic
 words, punchier than the spoken hook (a bold claim or a teaser, not a copy of it), no channel name.
-And "series": the one of these channel series that fits the story best: {{series}}.
+And "hook_title_alt": a second, different headline of the same kind (another angle: a question if the
+first is a claim, a number if the first is a teaser) — we A/B test the two across platforms.
+And "series": the one of these channel series that fits the story best (each with its closing-line
+spirit for the CTA):
+{{series}}
 
 Also write "description_en": 1–2 English sentences for the post caption, and "hashtags": 5–8 tags
 mixing Arabic and English, each starting with #.

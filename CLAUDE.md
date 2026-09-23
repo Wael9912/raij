@@ -21,7 +21,8 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 9 Analytics + runner | ✅ done | `096c920` | live: YouTube metrics for 3 Shorts, weekly report sent; launchd bot/daily/publish installed and running. IG/FB insights mock-only |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
-Missing: YouTube API key (discovery), Reddit, Groq, Pixabay, Meta. YouTube OAuth ✅ (`data/youtube.token.json`).
+Missing: YouTube API key (discovery), Reddit, Groq, Pixabay, Meta. YouTube OAuth ✅ (`data/youtube.token.json`; re-auth
+pending for the Phase 12 playlist scope).
 **Runs on GitHub Actions** (`.github/workflows/raij.yml`, `tick` command); Mac launchd services are uninstalled
 (`install-services` still exists for a fallback). Never run a second Telegram poller (two pollers fight over getUpdates).
 Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** — subtitles are drawn in Python instead.
@@ -148,6 +149,31 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   message with a **🔁 Retry** button (`rt:<vid>` → new `approved` row with note `retry`, failed posts reset to
   queued/0 attempts). Weekly report: title line, then numbers line (RTL). Daily-failure notice links the Actions run.
 
+- **Phase 12 (2026-09-23, audit D + E/12; owner's calls D1–D4 above):** `ranking.categories` = tech, money, wow-facts,
+  life-hack, tools (selectable); `other_categories` news-lite/sports/culture are still labelled by the screen but
+  stay `ranked`, never picked. `classify.txt` also returns `audience_fit` 1–5, `evergreen`, `ad_safe`, `format`
+  (candidates columns; `ad_safe=false` → `rejected`); `ranking.audience` names who fit is judged for. **Screen pool
+  is round-robin across sources** (`rank.screen_pool`, 45 items = 3 calls): RSS sits at a flat ≈0.59 and never
+  reached the model behind 30 Trends terms. **Selection order** = score × `category_weights` × `region_weights`
+  (max over "EG,SA"; `region_default_weight` for unknown) × (1 + `fit_weight`·(fit−3)) × (1 + `evergreen_bonus`)
+  × winner boost (`rank.Weights`; stored `score` unchanged). Trends geos SA/AE/KW/EG (US dropped: NFL noise);
+  feeds = Sky News Arabia ×3, Asharq Al-Awsat economy, AIT, BBC Arabic sci-tech (region AR) + TechCrunch, Verge,
+  MIT TR, ScienceDaily, Live Science, Lifehacker, MakeUseOf — all fetched live 2026-09-23 (Al Arabiya/Argaam/CNBC
+  Arabia/Maaal have no usable feed; **Arab News answers httpx with a Cloudflare challenge** — not worked around).
+  Voice `ar-SA-HamedNeural` (alt Shakir); tone/prompt "MSA with a light Gulf touch". Series added `money`
+  "أرقام تهمك", `tools` "أداة اليوم"; `brands[].cta` = closing lines per series, rotated by id (`write.cta_line`):
+  the script prompt lists each series with its line, the end card draws it (`videos.notes.cta`). Script also
+  returns `hook_title_alt` (A/B: YouTube/TikTok use A = the burnt-in title, Instagram/Facebook captions use B;
+  `scripts.notes.hook_title_alt`, `PostText.caption_alt`). **Posting windows** (`publish.windows`: Asia/Riyadh
+  08/13/18/21, 150 min): a video's first upload waits for an open window, one video per window (taken = any video's
+  first successful post since the window start), oldest approval first; a partly-published video finishes its other
+  platforms whenever due; `times: []` = immediate. **SEO**: YouTube title `{hook_title} | {series}` (≤100, no
+  "#Shorts" — it's in the description), description = title / spoken Arabic hook / English / tags / sources /
+  credits / #Shorts; tags = script tags + `publish.seo_tags[category]` + default (≤15, deduped); after upload the
+  Short is added to a public playlist named after its series (`youtube.add_to_playlist`, listed once per process,
+  created if missing, best effort). Needs the `youtube` scope (`SCOPES` changed) — see "Still pending". Live on
+  the DB copy: 45 screened, picks money ×2 / wow-facts ×2 / life-hack, a crime trend rejected as not ad-safe,
+  Saudi National Day labelled culture (fit 5) and therefore not picked — add `culture` to `categories` if wanted.
 - **Phase 10a (2026-09-23, audit A1/A2/A3/A9/A10):** `main()` touches `data/.changed` in a `finally` for every
   writing command, and the workflow packs state whenever the Tick step didn't succeed (step timeout 150 min), so a
   crash never replays the day. Regeneration creates the replacement `videos` row *before* building and marks it
@@ -220,12 +246,15 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 | 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ✅ 2026-09-23 |
 | 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths + authenticated bundle, S3 id regex/size cap, S4 owner id/reply check/expiry, S5–S8; `db.start_run/finish_run`; 20 new tests | ✅ 2026-09-23 |
 | 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, 48/72 h reminders (warn only), retry button, setMyCommands, per-video pending edit, /approve_all + /skip with confirm | ✅ 2026-09-23 |
-| 12 | Content I (needs owner decisions D1–D4): niche/region weights, fit score in classify, posting windows, SEO + playlists, CTA rotation, A/B titles | ⬜ next |
-| 13 | Pick-before-render via Telegram; real series (templates, quotas, evergreen source) | ⬜ |
+| 12 | Content I (owner: D1 tech/money/wow-facts/life-hack + tools, D2 Gulf-first, D3 MSA + `ar-SA-HamedNeural`, D4 tools series): niche/region/fit weights, round-robin screen, ad-safe gate, Gulf feeds, posting windows, SEO title/description/tags, playlists, CTA rotation, A/B titles | ✅ 2026-09-23 (playlists need owner re-auth) |
+| 13 | Pick-before-render via Telegram; real series (templates, quotas, evergreen source) | ⬜ next |
 | 14 | Topic performance memory, traffic-source metrics, `tools`/affiliate series, second brand | ⬜ |
 | 15 | >60 s variants for TikTok/FB, weekly long-form compile | ⬜ |
 
 Still pending from before:
+0. **Owner: YouTube re-auth for playlists** — on the Mac `uv run python -m src.main youtube-auth` (new `youtube` scope),
+   then `gh secret set RAIJ_YOUTUBE_TOKEN -R Wael9912/raij < data/youtube.token.json`. Until then Shorts upload fine
+   and the playlist step logs "lacks the `youtube` scope".
 1. **Owner: Meta keys** — paste App ID, App Secret, short-lived token → exchange → add to .env →
    `grep -vE '^(RAIJ_STATE_KEY)=' .env | gh secret set RAIJ_ENV -R Wael9912/raij`. IG/FB start with the first videos
    approved after the keys exist (#20 #21 #23 were closed as `published` on 2026-09-23, owner's call).

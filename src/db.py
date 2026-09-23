@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS candidates (
     rank_reason   TEXT,
     selected_at   TEXT,                             -- schedule.timezone local time; when rank picked it for the day
     topic         TEXT,                             -- LLM story slug; one pick per topic
+    audience_fit  INTEGER,                          -- 1–5 from the screen: how much the target audience cares (Phase 12)
+    evergreen     INTEGER,                          -- 0/1: still interesting in a month
+    ad_safe       INTEGER,                          -- 0/1: advertiser-friendly; 0 → rejected
+    format        TEXT,                             -- story|list|howto|explainer|fact
     attempts      INTEGER NOT NULL DEFAULT 0,       -- retryable extract/script failures so far (A6)
     status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged|extracted|extract_failed|scripted|script_rejected|expired
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -165,6 +169,10 @@ MIGRATIONS = [
     ("videos", "review_msg_id", "INTEGER"),
     ("candidates", "attempts", "INTEGER NOT NULL DEFAULT 0"),
     ("posts", "last_attempt_at", "TEXT"),
+    ("candidates", "audience_fit", "INTEGER"),
+    ("candidates", "evergreen", "INTEGER"),
+    ("candidates", "ad_safe", "INTEGER"),
+    ("candidates", "format", "TEXT"),
 ]
 
 

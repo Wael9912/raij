@@ -55,7 +55,7 @@ def publish_instagram(cfg: Config, client: httpx.Client, video: Path, text: Post
     ig, token = cfg.secret("META_IG_USER_ID"), cfg.secret("META_PAGE_ACCESS_TOKEN")
     g = _graph(cfg)
     container = request(client, "POST", f"{g}/{ig}/media", data={
-        "media_type": "REELS", "upload_type": "resumable", "caption": text.caption[:2200],
+        "media_type": "REELS", "upload_type": "resumable", "caption": (text.caption_alt or text.caption)[:2200],
         "share_to_feed": "true", "access_token": token}).json()
     cid, upload_url = container.get("id"), container.get("uri")
     if not cid or not upload_url:
@@ -100,7 +100,7 @@ def publish_facebook(cfg: Config, client: httpx.Client, video: Path, text: PostT
     _rupload(client, upload_url, token, video)
     done = request(client, "POST", f"{g}/{page}/video_reels", retries=0, data={
         "upload_phase": "finish", "video_id": vid, "video_state": "PUBLISHED",
-        "description": text.caption[:2200], "access_token": token}).json()
+        "description": (text.caption_alt or text.caption)[:2200], "access_token": token}).json()
     if not done.get("success"):
         raise PublishError(f"Facebook finish failed: {str(done)[:200]}")
     return Posted(str(vid), f"https://www.facebook.com/reel/{vid}")
