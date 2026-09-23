@@ -48,7 +48,9 @@ def plists(cfg: Config) -> dict[str, dict]:
     return {
         "com.raij.bot": job("com.raij.bot", "bot", RunAtLoad=True, KeepAlive=True, ThrottleInterval=30),
         "com.raij.daily": job("com.raij.daily", "run-daily", StartCalendarInterval={"Hour": hour, "Minute": minute}),
-        "com.raij.publish": job("com.raij.publish", "publish",
+        # RunAtLoad: a StartInterval timer restarts on every reload, so without it a day of code reloads would
+        # never let the job fire (seen 2026-09-23: four reloads, "runs = 0", approved videos never posted).
+        "com.raij.publish": job("com.raij.publish", "publish", RunAtLoad=True,
                                 StartInterval=int(cfg.get("publish.every_minutes", 30)) * 60),
     }
 
