@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ log = logging.getLogger("raij.assemble")
 PEXELS_URL = "https://api.pexels.com/videos/search"
 PIXABAY_URL = "https://pixabay.com/api/videos/"
 TARGET_W = 1080
+SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")      # provider ids become file names (S3)
+MAX_CLIP_BYTES = 200 * 2**20                       # a stock clip is never this big; an error page or bomb might be
 
 
 class BrollError(RuntimeError):
@@ -164,17 +167,35 @@ def choose(cfg: Config, client: httpx.Client, keywords: list[str], need: float, 
 
 
 def download(cfg: Config, client: httpx.Client, clip: Clip) -> Clip:
+    # The provider's id names the file (S3): only a plain token may reach the path, and a clip is a video of
+    # bounded size — an HTML error page or a multi-GB file is refused before it lands in assets/stock.
+    if not (SAFE_ID.fullmatch(clip.provider) and SAFE_ID.fullmatch(clip.id)):
+        raise BrollError(f"refusing clip with unsafe id {clip.provider!r}:{clip.id!r}")
     stock = cfg.root / "assets" / "stock"
     stock.mkdir(parents=True, exist_ok=True)
     dest = stock / f"{clip.provider}_{clip.id}.mp4"
     if not dest.exists() or dest.stat().st_size == 0:
         part = dest.with_suffix(".part")
-        with client.stream("GET", clip.url, follow_redirects=True, timeout=120) as resp:
-            if resp.status_code >= 400:
-                raise BrollError(f"download {clip.provider}:{clip.id} failed: HTTP {resp.status_code}")
-            with open(part, "wb") as f:
-                for chunk in resp.iter_bytes():
-                    f.write(chunk)
+        try:
+            with client.stream("GET", clip.url, follow_redirects=True, timeout=120) as resp:
+                if resp.status_code >= 400:
+                    raise BrollError(f"download {clip.provider}:{clip.id} failed: HTTP {resp.status_code}")
+                ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                if ctype and not (ctype.startswith("video/") or ctype == "application/octet-stream"):
+                    raise BrollError(f"download {clip.provider}:{clip.id} is not a video ({ctype})")
+                declared = int(resp.headers.get("content-length") or 0)
+                if declared > MAX_CLIP_BYTES:
+                    raise BrollError(f"download {clip.provider}:{clip.id} too big ({declared / 2**20:.0f} MB)")
+                size = 0
+                with open(part, "wb") as f:
+                    for chunk in resp.iter_bytes():
+                        size += len(chunk)
+                        if size > MAX_CLIP_BYTES:
+                            raise BrollError(f"download {clip.provider}:{clip.id} exceeded {MAX_CLIP_BYTES >> 20} MB")
+                        f.write(chunk)
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
         part.rename(dest)
     clip.path = str(dest.relative_to(cfg.root))
     return clip

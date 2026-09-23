@@ -37,7 +37,7 @@ def keyboard(video_id: int) -> dict:
 
 def parse_callback(data: str) -> tuple[str, int] | None:
     act, _, vid = (data or "").partition(":")
-    return (act, int(vid)) if act in ACTIONS and vid.isdigit() else None
+    return (act, int(vid)) if act in ACTIONS and vid.isascii() and vid.isdigit() else None
 
 
 def caption(ctx: dict[str, Any]) -> str:

@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from src import llm
+from src import db, llm
 from src.config import Config
 from src.analytics.report import winners_prompt
 from src.script import titles
@@ -61,8 +61,7 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
         log.info("[dry run] no LLM calls, nothing written")
         return 0
 
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('script')").lastrowid
-    conn.commit()
+    run_id = db.start_run(conn, "script")
     report, retry = [], []
     passed_stories: set[int] = set()
     done_stories: set[int] = set()
@@ -109,9 +108,7 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
     else:
         status = "failed"
     notes = {"pending": len(work), "passed": passed, "rejected": len(report) - passed, "retry": retry}
-    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-                 (status, json.dumps(notes, ensure_ascii=False), run_id))
-    conn.commit()
+    db.finish_run(conn, run_id, status, notes)
 
     if report:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")

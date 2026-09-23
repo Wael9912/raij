@@ -79,8 +79,7 @@ def report(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
         log.info("[dry run] weekly report %s", "due — would send" if due else "not due")
         return 0
 
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('report')").lastrowid
-    conn.commit()
+    run_id = db.start_run(conn, "report")
     got, errors = {}, {}
     own = client is None
     client = client or make_client()
@@ -112,8 +111,6 @@ def report(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
             log.warning("Weekly report not sent: %s", exc)
             errors["weekly_report"] = str(exc)[:300]
     status = "ok" if not errors else ("partial" if got or sent else "failed")
-    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-                 (status, json.dumps({"collected": got, "errors": errors, "weekly_sent": sent}), run_id))
-    conn.commit()
+    db.finish_run(conn, run_id, status, {"collected": got, "errors": errors, "weekly_sent": sent})
     log.info("Report %s: metrics %s%s", status, got or "none", "; weekly report sent" if sent else "")
     return 1 if status == "failed" else 0

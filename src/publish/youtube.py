@@ -119,8 +119,11 @@ def authorize(cfg: Config, client: httpx.Client, open_browser: Callable[[str], o
                            "myaccount.google.com/permissions and run youtube-auth again")
     path = token_file(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"refresh_token": token["refresh_token"], "scope": token.get("scope")}), encoding="utf-8")
-    os.chmod(path, 0o600)
+    body = json.dumps({"refresh_token": token["refresh_token"], "scope": token.get("scope")}).encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)     # private from the first byte (S6)
+    with os.fdopen(fd, "wb") as f:
+        f.write(body)
+    os.chmod(path, 0o600)                                                  # in case the file pre-existed
     return path
 
 

@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from src import db
+from src.assemble.render import GuardrailError
 from src.config import load_config
 from src.discover.common import Candidate, upsert_candidates
 from src.review import bot as botmod
@@ -79,13 +80,22 @@ def _rendered(cfg, conn, status="rendered", size=1000):
     conn.commit()
 
 
-def _cb(data, chat=CHAT, cid="cb1"):
-    return {"callback_query": {"id": cid, "data": data, "from": {"id": 7},
+def _cb(data, chat=CHAT, cid="cb1", sender=None):
+    # A private chat: the owner's user id is the chat id (S4 — the bot checks the sender, not just the chat).
+    return {"callback_query": {"id": cid, "data": data, "from": {"id": int(sender or chat)},
                                "message": {"message_id": 101, "chat": {"id": int(chat)}}}}
 
 
-def _msg(text, chat=CHAT):
-    return {"message": {"message_id": 5, "text": text, "from": {"id": 7}, "chat": {"id": int(chat)}}}
+def _msg(text, chat=CHAT, sender=None, reply_to=None):
+    msg = {"message_id": 5, "text": text, "from": {"id": int(sender or chat)}, "chat": {"id": int(chat)}}
+    if reply_to is not None:
+        msg["reply_to_message"] = {"message_id": reply_to}
+    return {"message": msg}
+
+
+def _prompt_id(tg):
+    """The message id of the last ✏️ ForceReply prompt the fake Telegram handed out."""
+    return tg.next_id
 
 
 # --- cards ---------------------------------------------------------------------
@@ -154,6 +164,84 @@ def _handler(cfg, conn, tg, deps=None):
     return botmod.Handler(cfg, conn, tg.bot(), CHAT, deps)
 
 
+def test_unauthorized_sender_in_the_right_chat_is_ignored(env):
+    """S4: the chat alone isn't authorization — a tap or text from another user id does nothing."""
+    cfg, conn, _ = env
+    _rendered(cfg, conn, status="in_review")
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg)
+    h.handle(_cb("ap:1", sender=999))
+    h.handle(_msg("/pause", sender=999))
+    assert tg.calls == [] and conn.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
+    assert conn.execute("SELECT status FROM videos WHERE id = 1").fetchone()[0] == "in_review"
+    assert not db.publishing_paused(conn)
+
+
+def test_owner_id_override(env, monkeypatch):
+    cfg, conn, _ = env
+    monkeypatch.setenv("TELEGRAM_OWNER_ID", "555")
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg)
+    h.handle(_msg("/pause"))                       # sender == chat id, but the owner is someone else now
+    assert not db.publishing_paused(conn)
+    h.handle(_msg("/pause", sender=555))
+    assert db.publishing_paused(conn)
+
+
+def test_edit_note_must_reply_to_the_prompt(env, monkeypatch):
+    """S4: a stray text while an ✏️ prompt is open nudges instead of rewriting; the reply itself still works."""
+    cfg, conn, _ = env
+    _in_review(cfg, conn)
+    fb = FakeBuild(monkeypatch, cfg)
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
+    h.handle(_cb("ed:1"))
+    prompt = _prompt_id(tg)
+    h.handle(_msg("just chatting"))
+    assert "edit_note" not in fb.calls and db.get_flag(conn, "pending_edit") != "null"
+    assert "reply to the ✏️ prompt" in tg.calls[-1][1]["text"] and tg.calls[-1][1]["reply_to_message_id"] == prompt
+    h.handle(_msg("the real note", reply_to=prompt))
+    assert fb.calls["edit_note"] == "the real note" and db.get_flag(conn, "pending_edit") == "null"
+
+
+def test_edit_prompt_expires(env, monkeypatch):
+    cfg, conn, _ = env
+    _in_review(cfg, conn)
+    fb = FakeBuild(monkeypatch, cfg)
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
+    h.handle(_cb("ed:1"))
+    prompt = _prompt_id(tg)
+    pending = json.loads(db.get_flag(conn, "pending_edit"))
+    pending["at"] -= botmod.EDIT_NOTE_TTL + 1
+    db.set_flag(conn, "pending_edit", json.dumps(pending))
+    h.handle(_msg("too late", reply_to=prompt))
+    assert "edit_note" not in fb.calls and db.get_flag(conn, "pending_edit") == "null"
+    assert "expired" in tg.calls[-1][1]["text"]
+    assert conn.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
+
+
+def test_callback_rejects_non_ascii_digits():
+    assert cards.parse_callback("ap:1") == ("ap", 1)
+    assert cards.parse_callback("ap:١") is None            # Arabic-Indic digit passes str.isdigit()
+    assert cards.parse_callback("ap:") is None and cards.parse_callback("zz:1") is None
+
+
+def test_send_card_refuses_video_outside_generated_assets(env):
+    """S7: the review upload goes through the same guardrail as publish."""
+    cfg, conn, tmp = env
+    _rendered(cfg, conn)
+    (tmp / "data").mkdir(exist_ok=True)
+    (tmp / "data" / "source.mp4").write_bytes(b"0")
+    conn.execute("UPDATE videos SET video_path = 'data/source.mp4' WHERE id = 1")
+    conn.commit()
+    tg = FakeTelegram()
+    with pytest.raises(GuardrailError):
+        runner.send_card(cfg, conn, tg.bot(), CHAT, 1, run=lambda cmd: subprocess.CompletedProcess(cmd, 0))
+    assert "sendVideo" not in tg.methods()
+    assert conn.execute("SELECT status FROM videos WHERE id = 1").fetchone()[0] == "rendered"
+
+
 def test_unauthorized_chat_is_ignored(env):
     cfg, conn, _ = env
     _rendered(cfg, conn, status="in_review")
@@ -174,7 +262,7 @@ def test_approve_and_reject(env, act, decision):
     h = _handler(cfg, conn, tg)
     h.handle(_cb(f"{act}:1"))
     appr = conn.execute("SELECT decision, decided_by, telegram_msg_id FROM approvals").fetchone()
-    assert tuple(appr) == (decision, "7", 101)
+    assert tuple(appr) == (decision, CHAT, 101)
     assert conn.execute("SELECT status FROM videos").fetchone()[0] == decision
     assert tg.methods()[:2] == ["answerCallbackQuery", "editMessageReplyMarkup"]   # ack, then buttons off
     h.handle(_cb(f"{act}:1", cid="cb2"))                                 # double tap
@@ -240,7 +328,7 @@ def test_edit_flow_regenerates_and_resends(env, monkeypatch):
     h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
     h.handle(_cb("ed:1"))
     assert tg.calls[-1][0] == "sendMessage" and tg.calls[-1][1]["reply_markup"]["force_reply"] is True
-    h.handle(_msg("Make the hook about the 2027 election"))
+    h.handle(_msg("Make the hook about the 2027 election", reply_to=_prompt_id(tg)))
     assert fb.calls["edit_note"] == "Make the hook about the 2027 election"
     appr = conn.execute("SELECT decision, note FROM approvals").fetchone()
     assert tuple(appr) == ("edit", "Make the hook about the 2027 election")
@@ -281,7 +369,7 @@ def test_failed_regeneration_puts_original_back(env, monkeypatch):
     tg = FakeTelegram()
     h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
     h.handle(_cb("ed:1"))
-    h.handle(_msg("rewrite it"))
+    h.handle(_msg("rewrite it", reply_to=_prompt_id(tg)))
     assert conn.execute("SELECT status FROM videos WHERE id = 1").fetchone()[0] == "in_review"
     texts = [b.get("text", "") for m, b in tg.calls if m == "sendMessage"]
     assert any("Couldn't regenerate #1" in t and "too similar" in t for t in texts)

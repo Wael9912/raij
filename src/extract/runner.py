@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from src import llm
+from src import db, llm
 from src.config import Config
 from src.discover.common import make_client
 from src.extract.sources import ExtractError, RunCmd, SourceText, run_cmd, source_text
@@ -95,8 +95,7 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
         log.info("[dry run] nothing fetched, no LLM calls, nothing written")
         return 0
 
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('extract')").lastrowid
-    conn.commit()
+    run_id = db.start_run(conn, "extract")
     min_chars = cfg.get("extract.min_source_chars", 120)
     cards, failed, retry = [], [], []
     own_client = client is None
@@ -146,9 +145,7 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
     else:
         status = "failed"
     notes = {"pending": len(pending), "extracted": len(cards), "failed": failed, "retry": retry}
-    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-                 (status, json.dumps(notes, ensure_ascii=False), run_id))
-    conn.commit()
+    db.finish_run(conn, run_id, status, notes)
 
     if cards:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -157,7 +154,7 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
         path = out_dir / f"{day}.json"
         existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
         path.write_text(json.dumps(existing + cards, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(json.dumps(cards, ensure_ascii=False, indent=2))
+        log.info("Story cards written to %s", path)      # not printed: the Actions log is public (S5)
 
     level = logging.INFO if status == "ok" else logging.WARNING
     log.log(level, "Extract %s: %d/%d story cards, %d unusable, %d to retry",

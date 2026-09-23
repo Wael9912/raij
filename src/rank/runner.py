@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from src import llm
+from src import db, llm
 from src.analytics.report import winner_boost
 from src.config import Config
 from src.rank.retellability import classify
@@ -112,7 +112,7 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
         log.info("[dry run] no LLM calls made, nothing written")
         return 0
 
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('rank')").lastrowid
+    run_id = db.start_run(conn, "rank")
     for s in scored:
         conn.execute("UPDATE candidates SET score = ?, status = 'ranked' WHERE id = ?", (s.score, s.id))
         by_id[s.id].update(score=s.score, status="ranked")
@@ -163,14 +163,12 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
     if status == "ok" and len(selected) < top_n:
         status = "partial"
     notes.update(selected=len(selected), flagged=len(flagged))
-    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-                 (status, json.dumps(notes, ensure_ascii=False), run_id))
-    conn.commit()
+    db.finish_run(conn, run_id, status, notes)
 
     out_dir = out_dir or cfg.root / "data" / "rank"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{day}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    log.info("Rank report written to %s", out_dir / f"{day}.json")   # not printed: the Actions log is public (S5)
 
     level = logging.INFO if len(selected) >= top_n else logging.WARNING
     log.log(level, "Rank %s: %d/%d selected today, %d screened this run, %d flagged",

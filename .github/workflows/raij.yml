@@ -4,6 +4,11 @@
 # RAIJ_STATE_KEY, RAIJ_YOUTUBE_TOKEN, RAIJ_CLIENT_SECRET. See SETUP.md "GitHub Actions".
 # GitHub's own schedule fires only every 2–3 h on this repo, so a Cloudflare Worker (deploy/cloudflare-trigger)
 # dispatches the workflow every 10 min; the schedule below stays as a fallback.
+#
+# Hardening (audit S1): actions pinned to commit SHAs (a moved tag can't run new code here); the checkout
+# keeps no git credentials; the repo token and the state key reach only the steps that need them — the
+# pipeline itself (which reads untrusted web pages) runs with neither; keys land on disk only after the cache
+# restore and are removed before the cache save.
 name: raij
 
 on:
@@ -17,7 +22,7 @@ on:
         required: false
 
 permissions:
-  contents: write        # keep-alive commit (GitHub pauses schedules after 60 idle days)
+  contents: write        # keep-alive commit (GitHub pauses schedules after 60 idle days), bootstrap release
   actions: write         # prune old state caches
 
 concurrency:
@@ -29,13 +34,12 @@ jobs:
     if: vars.RAIJ_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    env:
-      RAIJ_STATE_KEY: ${{ secrets.RAIJ_STATE_KEY }}
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e   # v6.8.0
         with:
           enable-cache: true
 
@@ -48,6 +52,29 @@ jobs:
         run: |
           uv sync --frozen --no-dev
           uv run python -c "from src import textshape; assert textshape.ensure(), 'Arabic shaping (raqm) unavailable'"
+
+      - name: Restore state (cache)
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
+        with:
+          path: state.enc
+          key: raij-state-${{ github.run_id }}
+          restore-keys: raij-state-
+
+      - name: Fetch the bootstrap state (no cache)
+        if: hashFiles('state.enc') == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "No cached state — trying the one-time bootstrap release"
+          gh release download state-bootstrap --pattern state.enc || {
+            echo "::error::No state found. Refusing to start from an empty database (it would re-post everything)."; exit 1; }
+
+      - name: Unpack state
+        id: unpack
+        env:
+          RAIJ_STATE_KEY: ${{ secrets.RAIJ_STATE_KEY }}
+        run: uv run python -m src.main state unpack state.enc
 
       - name: Keys
         env:
@@ -62,36 +89,25 @@ jobs:
           [ -n "$RAIJ_YOUTUBE_TOKEN" ] && printf '%s' "$RAIJ_YOUTUBE_TOKEN" > data/youtube.token.json
           true
 
-      - name: Restore state (cache)
-        id: cache
-        uses: actions/cache/restore@v4
-        with:
-          path: state.enc
-          key: raij-state-${{ github.run_id }}
-          restore-keys: raij-state-
-
-      - name: Unpack state
-        id: unpack
-        run: |
-          if [ ! -f state.enc ]; then
-            echo "No cached state — trying the one-time bootstrap release"
-            gh release download state-bootstrap --pattern state.enc || {
-              echo "::error::No state found. Refusing to start from an empty database (it would re-post everything)."; exit 1; }
-          fi
-          uv run python -m src.main state unpack state.enc
-
       - name: Tick
         id: tick
         timeout-minutes: 150          # leaves the job time to pack + save even when the pipeline hangs
         env:
           RAIJ_COMMAND: ${{ inputs.command || 'tick' }}
+          RAIJ_STATE_KEY: ${{ secrets.RAIJ_STATE_KEY }}   # weekly encrypted DB backup to Telegram
         run: |
           # shellcheck disable=SC2086  # the command may carry flags ("publish --dry-run"): word-split on purpose
           uv run python -m src.main $RAIJ_COMMAND
 
+      - name: Remove keys from disk
+        if: always()
+        run: rm -f .env client_secret.json data/youtube.token.json
+
       - name: Pack state
         id: pack
         if: always() && steps.unpack.outcome == 'success'
+        env:
+          RAIJ_STATE_KEY: ${{ secrets.RAIJ_STATE_KEY }}
         run: |
           # A tick that failed or was killed may have changed the DB without touching data/.changed:
           # save anyway, or the next tick replays the day (daily pipeline, cards, quota).
@@ -104,13 +120,15 @@ jobs:
 
       - name: Save state (cache)
         if: always() && steps.pack.outputs.save == 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830   # v4.3.0
         with:
           path: state.enc
           key: raij-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Prune old state caches (keep 3)
         if: always() && steps.pack.outputs.save == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh cache list --key raij-state- --sort created_at --order desc --limit 50 --json id --jq '.[3:][].id' \
             | xargs -r -n1 gh cache delete || true
@@ -119,6 +137,8 @@ jobs:
         # The fallback when the cache is gone (evicted after 7 idle days, or the 10 GB limit). Kept fresh so a
         # fallback doesn't replay week-old Telegram taps or re-upload videos. Encrypted, so a public asset is fine.
         if: always() && steps.pack.outputs.save == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh release view state-bootstrap >/dev/null 2>&1; then
             gh release create state-bootstrap --title "State bootstrap" --latest=false \
@@ -134,10 +154,14 @@ jobs:
 
       - name: Keep-alive commit (every ~45 days)
         if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           last=$(git log -1 --format=%ct)
           if [ $(( $(date +%s) - last )) -gt $(( 45 * 86400 )) ]; then
             git config user.name "raij-bot"; git config user.email "raij-bot@users.noreply.github.com"
             git commit --allow-empty -m "keep-alive (scheduled workflows pause after 60 idle days)"
-            git push
+            # The checkout kept no credentials (persist-credentials: false): authenticate this one push only.
+            auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:main
           fi

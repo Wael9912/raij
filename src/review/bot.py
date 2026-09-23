@@ -1,7 +1,9 @@
 """bot: long-polling Telegram handler for the review buttons and commands.
 
-Only updates from TELEGRAM_CHAT_ID are acted on; everything else is ignored. Every state lives in
-the DB (videos.status, approvals, control flags), so the bot can be restarted at any time.
+Only updates from TELEGRAM_CHAT_ID *sent by the owner* are acted on (the sender's user id must equal
+the chat id — a private chat — or TELEGRAM_OWNER_ID when set); everything else is ignored (S4).
+Every state lives in the DB (videos.status, approvals, control flags), so the bot can be restarted
+at any time.
 
   ✅ Approve / ❌ Reject  → approvals row; video approved / rejected
   ✏️ Edit script          → asks for a note; the reply regenerates script → voice → video
@@ -36,6 +38,8 @@ from src.voice.runner import voice_script
 
 log = logging.getLogger("raij.review")
 
+EDIT_NOTE_TTL = 6 * 3600     # an unanswered "✏️ Edit" prompt expires: a stray text days later mustn't rewrite (S4)
+
 
 @dataclass
 class Deps:
@@ -52,22 +56,29 @@ class Deps:
 class Handler:
     def __init__(self, cfg: Config, conn: sqlite3.Connection, bot: Bot, chat: str, deps: Deps | None = None):
         self.cfg, self.conn, self.bot, self.chat = cfg, conn, bot, str(chat)
+        self.owner = str(cfg.secret("TELEGRAM_OWNER_ID") or self.chat)
         self.deps = deps or Deps()
 
     # -- dispatch ----------------------------------------------------------------
+    def _authorized(self, kind: str, chat: dict | None, sender: dict | None) -> bool:
+        """The owner's chat *and* the owner as sender: a bot in a group, or a forwarded tap, gets nothing."""
+        if str((chat or {}).get("id")) != self.chat:
+            log.warning("Ignoring %s from unauthorized chat", kind)
+            return False
+        if str((sender or {}).get("id")) != self.owner:
+            log.warning("Ignoring %s from unauthorized sender", kind)
+            return False
+        return True
+
     def handle(self, update: dict[str, Any]) -> None:
         if "callback_query" in update:
             cb = update["callback_query"]
-            if str(((cb.get("message") or {}).get("chat") or {}).get("id")) != self.chat:
-                log.warning("Ignoring callback from unauthorized chat")
-                return
-            self.on_button(cb)
+            if self._authorized("callback", (cb.get("message") or {}).get("chat"), cb.get("from")):
+                self.on_button(cb)
         elif "message" in update:
             msg = update["message"]
-            if str((msg.get("chat") or {}).get("id")) != self.chat:
-                log.warning("Ignoring message from unauthorized chat")
-                return
-            self.on_message(msg)
+            if self._authorized("message", msg.get("chat"), msg.get("from")):
+                self.on_message(msg)
 
     def _soft(self, fn: Callable, *args: Any) -> None:
         """Telegram cosmetics (the tap's toast, removing buttons) must never block the decision itself:
@@ -103,7 +114,7 @@ class Handler:
                                            reply_markup={"force_reply": True, "selective": True},
                                            reply_to_message_id=row["review_msg_id"])
             db.set_flag(self.conn, "pending_edit", json.dumps({"video_id": vid, "prompt": prompt["message_id"],
-                                                               "user": user}))
+                                                               "user": user, "at": time.time()}))
         else:
             self._approval(vid, cards.ACTIONS[act], user, row["review_msg_id"])
             self._regenerate(vid, new_broll=act == "nb", revoice=act == "rv")
@@ -126,12 +137,24 @@ class Handler:
                 self._soft(send_weekly, self.cfg, self.conn, self.bot)
             return
         pending = json.loads(db.get_flag(self.conn, "pending_edit") or "null")
-        if pending and text:
+        if not pending or not text:
+            return
+        vid = pending["video_id"]
+        if time.time() - float(pending.get("at") or 0) > EDIT_NOTE_TTL:
             db.set_flag(self.conn, "pending_edit", "null")
-            vid = pending["video_id"]
-            self._approval(vid, "edit", str((msg.get("from") or {}).get("id", "")), None, note=text)
-            self.bot.send_message(self.chat, f"⏳ Rewriting #{vid} with your note…")
-            self._regenerate(vid, edit_note=text)
+            log.info("Edit prompt for #%d expired; ignoring text", vid)
+            self.bot.send_message(self.chat, f"⌛ The ✏️ prompt for #{vid} expired — tap ✏️ Edit script again.")
+            return
+        # Only the reply to the ForceReply prompt is the note (S4): a stray text sent while a prompt is open must
+        # not rewrite the video. The owner gets a nudge instead.
+        if (msg.get("reply_to_message") or {}).get("message_id") != pending["prompt"]:
+            self.bot.send_message(self.chat, f"↩️ To edit #{vid}, reply to the ✏️ prompt (or tap ✏️ again).",
+                                  reply_to_message_id=pending["prompt"])
+            return
+        db.set_flag(self.conn, "pending_edit", "null")
+        self._approval(vid, "edit", str((msg.get("from") or {}).get("id", "")), None, note=text)
+        self.bot.send_message(self.chat, f"⏳ Rewriting #{vid} with your note…")
+        self._regenerate(vid, edit_note=text)
 
     def status(self) -> str:
         counts = dict(self.conn.execute("SELECT status, count(*) FROM videos GROUP BY status").fetchall())

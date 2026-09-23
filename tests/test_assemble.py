@@ -195,6 +195,46 @@ def test_download_is_cached(env, monkeypatch):
     assert downloads == ["https://cdn.example/101_hd.mp4"] and clip.path == "assets/stock/pexels_101.mp4"
 
 
+def _download_client(status=200, headers=None, content=b"mp4data", chunks=None):
+    def handler(request):
+        if chunks:
+            return httpx.Response(status, headers=headers or {}, stream=httpx.ByteStream(b"".join(chunks)))
+        return httpx.Response(status, headers=headers or {}, content=content)
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _clip(provider="pexels", cid="101"):
+    return broll.Clip(provider, cid, "https://cdn.example/x.mp4", "", "Ann", 1080, 1920, 10.0, "Pexels License")
+
+
+@pytest.mark.parametrize("provider,cid", [("pexels", "../../etc/cron.d/x"), ("pexels", "1/2"), ("pexels", ""),
+                                          ("pexels", "a" * 41), ("pe xels", "1"), ("pexels", "١٢")])
+def test_download_refuses_unsafe_ids(env, provider, cid):
+    """S3: the provider id becomes a file name — anything but a plain token is refused before any request."""
+    cfg, _, tmp = env
+    client = _download_client()
+    with pytest.raises(broll.BrollError, match="unsafe id"):
+        broll.download(cfg, client, _clip(provider, cid))
+    assert not (tmp / "assets/stock").exists() or not list((tmp / "assets/stock").iterdir())
+
+
+def test_download_refuses_non_video_and_oversized(env, monkeypatch):
+    cfg, _, tmp = env
+    with pytest.raises(broll.BrollError, match="not a video"):
+        broll.download(cfg, _download_client(headers={"content-type": "text/html; charset=utf-8"}), _clip())
+    with pytest.raises(broll.BrollError, match="too big"):
+        broll.download(cfg, _download_client(headers={"content-type": "video/mp4",
+                                                      "content-length": str(broll.MAX_CLIP_BYTES + 1)}), _clip())
+    monkeypatch.setattr(broll, "MAX_CLIP_BYTES", 10)
+    with pytest.raises(broll.BrollError, match="exceeded"):
+        broll.download(cfg, _download_client(headers={"content-type": "video/mp4"},
+                                             chunks=[b"x" * 6, b"x" * 5]), _clip())   # streamed, no content-length
+    stock = tmp / "assets/stock"
+    assert not list(stock.glob("*")), "no partial file may be left behind"
+    clip = broll.download(cfg, _download_client(headers={"content-type": "video/mp4"}, content=b"x" * 10), _clip())
+    assert clip.path == "assets/stock/pexels_101.mp4" and (tmp / clip.path).read_bytes() == b"x" * 10
+
+
 def test_segments_cover_voice():
     segs = render.segments_for(SPANS, [[Path("a")], [Path("b"), Path("c")]], 2.6)
     assert [(str(s.clip), s.seconds) for s in segs] == [("a", 1.6), ("b", 0.5), ("c", 0.5)]

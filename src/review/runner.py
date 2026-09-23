@@ -14,6 +14,8 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
+from src import db
+from src.assemble import render
 from src.config import Config
 from src.review import cards
 from src.review.telegram import MAX_VIDEO_BYTES, Bot, TelegramError
@@ -56,7 +58,8 @@ def send_card(cfg: Config, conn: sqlite3.Connection, bot: Bot, chat: str, video_
               run: RunCmd = run_cmd) -> int:
     """Send one video for review; returns the Telegram message id holding the buttons."""
     ctx = cards.context(conn, video_id)
-    path = preview_for(cfg, cfg.root / ctx["video_path"], ctx.get("duration_s") or 60, run=run)
+    # Same guardrail as publish (S7): only our own generated media ever leaves the machine.
+    path = preview_for(cfg, render.guard(cfg, Path(ctx["video_path"])), ctx.get("duration_s") or 60, run=run)
     msg = bot.send_video(chat, path, cards.caption(ctx), reply_markup=cards.keyboard(video_id))
     bot.send_message(chat, cards.script_text(ctx), reply_to_message_id=msg["message_id"])
     conn.execute("UPDATE videos SET status = 'in_review', review_msg_id = ? WHERE id = ?",
@@ -85,8 +88,7 @@ def review(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, bot: Bo
         log.info("[dry run] nothing sent")
         return 0
 
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('review')").lastrowid
-    conn.commit()
+    run_id = db.start_run(conn, "review")
     sent, retry = [], []
     try:
         if bot is None:
@@ -108,9 +110,6 @@ def review(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, bot: Bo
         log.info("Video %d sent for review", vid)
     total = len(sent) + len(retry)
     status = "ok" if len(sent) == total else ("partial" if sent else "failed")
-    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-                 (status, json.dumps({"pending": total, "sent": len(sent), "retry": retry}, ensure_ascii=False),
-                  run_id))
-    conn.commit()
+    db.finish_run(conn, run_id, status, {"pending": total, "sent": len(sent), "retry": retry})
     log.log(logging.INFO if status == "ok" else logging.WARNING, "Review %s: %d/%d sent", status, len(sent), total)
     return 1 if status == "failed" else 0

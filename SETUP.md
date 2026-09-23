@@ -63,8 +63,11 @@ uv run python -m src.main --help
 
 1. In Telegram, message **@BotFather**, send `/newbot`, and pick a name. Copy the token into `TELEGRAM_BOT_TOKEN`.
 2. Send any message to your new bot.
-3. Open `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `message.chat.id` into `TELEGRAM_CHAT_ID`.
-   (If the result is empty, send the bot another message and reload.)
+3. Get your chat id without pasting the token into a browser (browser history and sync services keep URLs):
+   `curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates" | python3 -c "import json,sys; print(json.load(sys.stdin)['result'][-1]['message']['chat']['id'])"`
+   and put it in `TELEGRAM_CHAT_ID`. (Empty result → send the bot another message and rerun.) In a private chat this
+   number is also your user id; the bot obeys only messages and taps *from* that user (set `TELEGRAM_OWNER_ID` if
+   they ever differ, e.g. a group chat).
 4. Send pending videos: `uv run python -m src.main review`
 5. Keep the button handler running (a spare terminal; Phase 9 adds a launchd service):
    `uv run python -m src.main bot` — it only obeys `TELEGRAM_CHAT_ID`.
@@ -131,7 +134,10 @@ and saves the state again if anything changed. Taps are handled within ~10–15 
 - Secrets (repo → Settings → Secrets and variables → Actions): `RAIJ_ENV` (the .env contents), `RAIJ_STATE_KEY`
   (random, also in the Mac's .env — needed to open backups), `RAIJ_YOUTUBE_TOKEN` (data/youtube.token.json),
   `RAIJ_CLIENT_SECRET` (client_secret.json). Variable `RAIJ_ENABLED=true` is the master switch.
-- Adding keys later (e.g. Meta): update `RAIJ_ENV` (`gh secret set RAIJ_ENV < .env`).
+- Adding keys later (e.g. Meta): update `RAIJ_ENV` **without** the state key (it is its own secret and must not
+  sit in the `.env` the pipeline reads): `grep -vE '^RAIJ_STATE_KEY=' .env | gh secret set RAIJ_ENV`.
+- Actions are pinned to commit SHAs in the workflows; when bumping a version, replace the SHA and its comment
+  together (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`).
 - Logs: the repo's **Actions** tab. TikTok copies arrive in Telegram. Weekly: the report + an encrypted DB backup.
 - Only one run at a time (`concurrency`); a run whose state restore failed never saves (an empty DB would re-post
   everything). A keep-alive commit every ~45 days stops GitHub pausing the schedule.

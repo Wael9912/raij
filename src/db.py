@@ -1,8 +1,10 @@
 """SQLite storage: schema + connection helper."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -189,3 +191,17 @@ def set_flag(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 def publishing_paused(conn: sqlite3.Connection) -> bool:
     return get_flag(conn, "publishing_paused", "0") == "1"
+
+
+def start_run(conn: sqlite3.Connection, command: str) -> int:
+    """Open the `runs` row every stage records (status `running`); `finish_run` closes it."""
+    run_id = conn.execute("INSERT INTO runs (command) VALUES (?)", (command,)).lastrowid
+    conn.commit()
+    return run_id
+
+
+def finish_run(conn: sqlite3.Connection, run_id: int, status: str, notes: Any) -> None:
+    """Close a stage's `runs` row: status `ok|partial|failed`, notes as JSON."""
+    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
+                 (status, json.dumps(notes, ensure_ascii=False), run_id))
+    conn.commit()

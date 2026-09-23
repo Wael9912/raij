@@ -136,7 +136,7 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                 if post["status"] in DONE or post["attempts"] >= max_attempts:
                     continue
                 if run_id is None:
-                    run_id = conn.execute("INSERT INTO runs (command) VALUES ('publish')").lastrowid
+                    run_id = db.start_run(conn, "publish")
                 conn.execute("UPDATE posts SET attempts = attempts + 1 WHERE id = ?", (post["id"],))
                 conn.commit()
                 try:
@@ -181,9 +181,7 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
     status = "failed" if failed and not done else ("partial" if failed else "ok")
     notes = {"videos": len(videos), "done": done, "failed": failed,
              "skipped": {n: missing[n] for n in sorted(skipped)}}
-    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-                 (status, json.dumps(notes, ensure_ascii=False), run_id))
-    conn.commit()
+    db.finish_run(conn, run_id, status, notes)
     level = logging.INFO if status == "ok" else logging.WARNING
     log.log(level, "Publish %s: %d post(s) done, %d failed, %d video(s) eligible", status, len(done), len(failed),
             len(videos))

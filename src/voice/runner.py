@@ -16,6 +16,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from src import db
 from src.config import Config
 from src.voice import tts
 from src.voice.tts import RunCmd, VoiceError
@@ -95,8 +96,7 @@ def voice(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, synth=tt
         return 0
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('voice')").lastrowid
-    conn.commit()
+    run_id = db.start_run(conn, "voice")
     voiced, failed, retry = [], [], []
     for s in pending:
         try:
@@ -128,9 +128,7 @@ def voice(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, synth=tt
     else:
         status = "failed"
     notes = {"pending": len(pending), "voiced": len(voiced), "failed": failed, "retry": retry}
-    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-                 (status, json.dumps(notes, ensure_ascii=False), run_id))
-    conn.commit()
+    db.finish_run(conn, run_id, status, notes)
     level = logging.INFO if status == "ok" else logging.WARNING
     log.log(level, "Voice %s: %d/%d voiced, %d too long, %d to retry",
             status, len(voiced), len(pending), len(failed), len(retry))

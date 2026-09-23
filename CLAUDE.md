@@ -124,7 +124,8 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
 - Review: plain Bot API over httpx (`review/telegram.py`; token only in the URL path, never in errors). `review`
   sends video (preview re-encode if >50 MB) + caption (hook, description, tags, sources, credits) + script
   message; video → `in_review` with `review_msg_id`. `bot` long-polls; offset in `control.telegram_offset`,
-  saved before handling (no replays). Only `TELEGRAM_CHAT_ID` is obeyed. Buttons are removed on the first tap.
+  saved before handling (no replays). Only `TELEGRAM_CHAT_ID`, and only messages/taps *from* the owner's user id
+  (= chat id, or `TELEGRAM_OWNER_ID`), are obeyed. Buttons are removed on the first tap.
   Approve/reject → `approvals` row + video status. Edit → ForceReply prompt, `control.pending_edit`; the next text
   is the note → `write_script(edit_note)` → new script version (old `superseded`, `edit_note` saved) → voice
   (`<script>_v<video>.wav`) → assemble → new video row (`parent_id`) → resent; old video `superseded`.
@@ -143,6 +144,20 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   uploads (2 quota units) and adopts a ≤7-day-old video with the identical title instead of re-uploading. The
   workflow creates/refreshes the `state-bootstrap` release weekly (it had never existed — a cache eviction would
   have halted the pipeline). `workflow_dispatch` input `command` runs any CLI command on the live state.
+- **Phase 10c (2026-09-23, audit S1–S8):** workflows pin actions to commit SHAs (bump = replace SHA + comment);
+  checkout keeps no git credentials (keep-alive pushes with a one-off `http.extraheader`); `GH_TOKEN` and
+  `RAIJ_STATE_KEY` are step-scoped — the **Tick step has no repo token**; keys are written *after* the cache restore
+  and `rm`'d before the cache save. **State bundle format 2** (`src/state.py`): `RAIJ-STATE-2\n` + HMAC-SHA256 over
+  the openssl ciphertext (MAC key = PBKDF2 of RAIJ_STATE_KEY) — a tampered/foreign bundle is rejected before
+  decryption; pre-10c bundles (`Salted__`) still unpack with a warning (old Telegram backups). Unpack writes only
+  `data/pipeline.db` (→ `cfg.db_path`) and plain files under `assets/generated/`; everything else is skipped and
+  logged. Stock download: provider/id must match `[A-Za-z0-9_-]{1,40}`, content-type must be video (or
+  octet-stream), ≤200 MB (`broll.MAX_CLIP_BYTES`), `.part` removed on any failure. Bot: sender `from.id` must equal
+  the chat id (private chat) or `TELEGRAM_OWNER_ID`; an edit note must be a *reply* to the ✏️ prompt (else a nudge)
+  and the prompt expires after 6 h (`bot.EDIT_NOTE_TTL`); callback ids are ASCII digits only. `review.send_card`
+  runs `render.guard()`. Rank/extract no longer print reports/cards (public Actions log) — data files only.
+  YouTube token file is created 0600 from the first byte. `db.start_run/finish_run` replace the per-runner `runs`
+  SQL. SETUP: chat id via curl, `RAIJ_ENV` = `.env` minus the state key.
 
 ## Next up
 
@@ -168,8 +183,8 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 | Phase | Scope | State |
 |---|---|---|
 | 10a | Ticks & state: A1 tick try/finally, A2 orphan row, A3 expire approved, A9 pause once, A10 bootstrap refresh, external cron trigger | ✅ 2026-09-23 (trigger deployed, dispatching every 10 min) |
-| 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ⬜ |
-| 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths, S3 id regex, S4 owner id/reply check, S5–S8; `stage_run()` dedupe; missing tests | ⬜ next |
+| 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ⬜ next |
+| 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths + authenticated bundle, S3 id regex/size cap, S4 owner id/reply check/expiry, S5–S8; `db.start_run/finish_run`; 20 new tests | ✅ 2026-09-23 |
 | 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, expiry, retry button, setMyCommands, per-video pending edit | ⬜ |
 | 12 | Content I (needs owner decisions D1–D4): niche/region weights, fit score in classify, posting windows, SEO + playlists, CTA rotation, A/B titles | ⬜ |
 | 13 | Pick-before-render via Telegram; real series (templates, quotas, evergreen source) | ⬜ |

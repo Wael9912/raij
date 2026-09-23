@@ -7,6 +7,7 @@ import sqlite3
 
 import httpx
 
+from src import db
 from src.config import Config
 from src.discover import reddit, rss, trends, youtube
 from src.discover.common import SourceResult, SourceSkipped, dedupe, make_client, upsert_candidates
@@ -63,8 +64,7 @@ def discover(
         log.info("[dry run] no network calls made, nothing written")
         return 0
 
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('discover')").lastrowid
-    conn.commit()
+    run_id = db.start_run(conn, "discover")
     own_client = client is None
     client = client or make_client()
     report: dict[str, dict] = {}
@@ -97,11 +97,7 @@ def discover(
         status = "partial"
     else:
         status = "ok"
-    conn.execute(
-        "UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-        (status, json.dumps(report, ensure_ascii=False), run_id),
-    )
-    conn.commit()
+    db.finish_run(conn, run_id, status, report)
 
     today = conn.execute(
         "SELECT COUNT(*) FROM candidates WHERE discovered_at >= datetime('now', '-1 day')"

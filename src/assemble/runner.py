@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from src.assemble import brand, broll, portrait, render, subtitles
+from src import db
 from src.config import Config
 from src.discover.common import make_client
 
@@ -159,8 +160,7 @@ def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, clien
         log.info("[dry run] nothing searched, downloaded or rendered")
         return 0
 
-    run_id = conn.execute("INSERT INTO runs (command) VALUES ('assemble')").lastrowid
-    conn.commit()
+    run_id = db.start_run(conn, "assemble")
     rendered, failed, retry = [], [], []
     if pending and not keys:
         log.error("No stock footage key — set PEXELS_API_KEY or PIXABAY_API_KEY in .env (see SETUP.md)")
@@ -206,9 +206,7 @@ def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, clien
     total = len(rendered) + len(failed) + len(retry)
     status = "ok" if len(rendered) == total else ("partial" if rendered else "failed")
     notes = {"pending": total, "rendered": len(rendered), "failed": failed, "retry": retry}
-    conn.execute("UPDATE runs SET finished_at = datetime('now'), status = ?, notes = ? WHERE id = ?",
-                 (status, json.dumps(notes, ensure_ascii=False), run_id))
-    conn.commit()
+    db.finish_run(conn, run_id, status, notes)
     level = logging.INFO if status == "ok" else logging.WARNING
     log.log(level, "Assemble %s: %d/%d rendered, %d failed, %d to retry", status, len(rendered), total,
             len(failed), len(retry))

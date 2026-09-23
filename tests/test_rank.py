@@ -194,7 +194,13 @@ def _classifier(calls):
     return handler
 
 
-def test_rank_selects_top_retellable(env, monkeypatch, capsys):
+def _report(out_dir):
+    files = sorted(out_dir.glob("*.json"))
+    assert len(files) == 1
+    return json.loads(files[0].read_text(encoding="utf-8"))
+
+
+def test_rank_selects_top_retellable(env, monkeypatch):
     cfg, conn, tmp = env
     monkeypatch.setenv("GEMINI_API_KEY", "g")
     cfg.data["ranking"]["batch_size"] = 5
@@ -206,7 +212,7 @@ def test_rank_selects_top_retellable(env, monkeypatch, capsys):
     assert [len(c) for c in calls] == [5, 3]                          # batched
     assert "<b>" not in json.dumps(calls)
 
-    report = json.loads(capsys.readouterr().out)
+    report = _report(tmp)                                             # never printed: Actions logs are public (S5)
     titles = [s["title"] for s in report["selected"]]
     assert len(titles) == 5
     assert "dance" not in titles and "vote" not in titles             # not retellable / political
@@ -224,22 +230,22 @@ def test_rank_selects_top_retellable(env, monkeypatch, capsys):
     # Same day again: no new LLM calls, same five picks.
     assert runner.rank(cfg, conn, client=client, out_dir=tmp) == 0
     assert len(calls) == 2
-    assert [s["title"] for s in json.loads(capsys.readouterr().out)["selected"]] == titles
+    assert [s["title"] for s in _report(tmp)["selected"]] == titles
 
 
-def test_rank_without_llm_scores_but_selects_nothing(env, capsys):
+def test_rank_without_llm_scores_but_selects_nothing(env):
     cfg, conn, tmp = env
     _seed(conn)
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
     assert runner.rank(cfg, conn, client=client, out_dir=tmp) == 1
-    assert json.loads(capsys.readouterr().out)["selected"] == []
+    assert _report(tmp)["selected"] == []
     assert conn.execute("SELECT COUNT(*) FROM candidates WHERE score IS NULL").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM candidates WHERE retellable IS NOT NULL").fetchone()[0] == 0
     run = conn.execute("SELECT status, notes FROM runs WHERE command = 'rank'").fetchone()
     assert run["status"] == "failed" and "llm_error" in json.loads(run["notes"])
 
 
-def test_rank_dry_run_writes_nothing(env, capsys):
+def test_rank_dry_run_writes_nothing(env):
     cfg, conn, tmp = env
     _seed(conn)
     assert runner.rank(cfg, conn, dry_run=True, out_dir=tmp) == 0
