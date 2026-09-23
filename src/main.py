@@ -165,25 +165,41 @@ def cmd_tick(cfg, conn, args) -> int:
     from src.review.runner import make_bot
     before = conn.total_changes
     code = 0
-    today = daily_due(cfg, conn)
-    if today and not args.dry_run:
-        db.set_flag(conn, "last_daily_run", today)          # set first: a crash mustn't loop the whole day
-        code |= cmd_run_daily(cfg, conn, args)
-    elif today:
-        log.info("[dry run] daily run is due (%s)", today)
-    if not args.dry_run:
-        try:
-            bot, chat = make_bot(cfg)
-            while poll(cfg, conn, bot, chat, once=True):     # drain every queued tap
-                pass
-        except Exception as exc:
-            log.error("Telegram pass failed: %s", exc)
-            code = 1
-    code |= publish(cfg, conn, dry_run=args.dry_run)
-    if conn.total_changes != before and not args.dry_run:
-        (cfg.root / "data" / ".changed").touch()
-    log.info("Tick done (%s)", "state changed" if conn.total_changes != before else "no changes")
+    try:
+        today = daily_due(cfg, conn)
+        if today and not args.dry_run:
+            db.set_flag(conn, "last_daily_run", today)      # set first: a crash mustn't loop the whole day
+            code |= cmd_run_daily(cfg, conn, args)
+        elif today:
+            log.info("[dry run] daily run is due (%s)", today)
+        if not args.dry_run:
+            try:
+                bot, chat = make_bot(cfg)
+                while poll(cfg, conn, bot, chat, once=True):  # drain every queued tap
+                    pass
+            except Exception as exc:
+                log.error("Telegram pass failed: %s", exc)
+                code = 1
+        code |= publish(cfg, conn, dry_run=args.dry_run)
+    finally:
+        # Whatever happened (A1): if the DB changed, the caller must save it, or the next tick replays the day
+        # (daily pipeline again, cards re-sent, quota burned).
+        changed = conn.total_changes != before
+        if changed and not args.dry_run:
+            (cfg.root / "data" / ".changed").touch()
+        log.info("Tick done (%s)", "state changed" if changed else "no changes")
     return code
+
+
+def cmd_finalize(cfg, conn, args) -> int:
+    """Close approved videos now: 'published' when every configured platform is done (owner's call not to wait
+    for missing keys), 'expired' when nothing went out. `publish` does the same by itself after max_age_hours."""
+    from src.publish.runner import finalize
+    closed = finalize(cfg, conn, max_age_hours=None, dry_run=args.dry_run)
+    for vid, status in closed:
+        log.info("%svideo %d → %s", "[dry run] " if args.dry_run else "", vid, status)
+    log.info("%d approved video(s) closed", len(closed))
+    return 0
 
 
 def cmd_state(cfg, conn, args) -> int:
@@ -258,6 +274,7 @@ def cmd_pause(cfg, conn, args) -> int:
 
 def cmd_resume(cfg, conn, args) -> int:
     db.set_flag(conn, "publishing_paused", "0")
+    db.set_flag(conn, "paused_notice_sent", "0")            # the next pause tells the owner again (A9)
     log.info("Publishing resumed")
     return 0
 
@@ -279,6 +296,8 @@ def build_parser() -> argparse.ArgumentParser:
         "uninstall-services": ("Stop and remove the background services", cmd_uninstall_services),
         "services": ("Show background service status", cmd_services),
         "tick": ("One short pass: daily run if due, Telegram taps, publish (for GitHub Actions)", cmd_tick),
+        "finalize": ("Close approved videos now instead of waiting publish.max_age_hours for missing platforms",
+                     cmd_finalize),
         "state": ("Pack/unpack the encrypted state bundle", cmd_state),
         "pause": ("Kill switch: halt all publishing", cmd_pause),
         "resume": ("Re-enable publishing", cmd_resume),
@@ -314,7 +333,13 @@ def main(argv: list[str] | None = None) -> int:
     conn = db.connect(cfg.db_path)
     try:
         db.init_db(conn)
-        return args.func(cfg, conn, args)
+        before = conn.total_changes
+        try:
+            return args.func(cfg, conn, args)
+        finally:
+            # Any command that changed the DB (tick, finalize, pause, …) tells the Actions job to save the state.
+            if conn.total_changes != before and not getattr(args, "dry_run", False):
+                (cfg.root / "data" / ".changed").touch()
     finally:
         conn.close()
 

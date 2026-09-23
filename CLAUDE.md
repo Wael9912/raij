@@ -4,7 +4,7 @@ The full spec is `CLAUDE_CODE_BUILD_BRIEF_v2_raij-shorts.md` (gitignored, local 
 starting a phase; this file tracks **status, decisions, and the plan**, and wins where they differ.
 To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.md`).
 
-## Status (updated 2026-09-22)
+## Status (updated 2026-09-23)
 
 | Phase | State | Commit | Notes |
 |---|---|---|---|
@@ -131,6 +131,19 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   New b-roll: same voice, `assemble_video(exclude=old stock ids)`. Re-voice: toggles brand `voice.alt`/`name`.
   Regeneration failure → message + original's buttons restored.
 
+- **Phase 10a (2026-09-23, audit A1/A2/A3/A9/A10):** `main()` touches `data/.changed` in a `finally` for every
+  writing command, and the workflow packs state whenever the Tick step didn't succeed (step timeout 150 min), so a
+  crash never replays the day. Regeneration creates the replacement `videos` row *before* building and marks it
+  `failed` (notes.failed) on any error. **Closing approved videos:** `publish.finalize()` runs after every publish
+  pass — approved + older than `publish.max_age_hours` → `published` if any platform went out, else `expired`
+  (new terminal status); what was skipped and why is in `videos.notes.publish`. The `finalize` command does it
+  now regardless of age, but only for videos whose wanted platforms are each done, unconfigured or out of
+  attempts (owner's decision: YouTube done = done; missing Meta keys don't hold a video). Pause notice is sent once
+  per pause (`control.paused_notice_sent`, cleared by /resume). YouTube upload first lists the channel's last 25
+  uploads (2 quota units) and adopts a ≤7-day-old video with the identical title instead of re-uploading. The
+  workflow creates/refreshes the `state-bootstrap` release weekly (it had never existed — a cache eviction would
+  have halted the pipeline). `workflow_dispatch` input `command` runs any CLI command on the live state.
+
 ## Next up
 
 **Live on GitHub Actions since 2026-09-22 19:07 Cairo** (repo Wael9912/raij, public; Mac services uninstalled).
@@ -142,7 +155,9 @@ and read the log, or use the weekly encrypted backup from Telegram (`state unpac
 Code changes: commit + `git push` (CI runs the tests; the next tick uses the new code).
 
 **Known (2026-09-23): GitHub runs the `*/10` cron only every ~2.5 h on this repo** (3 runs in 5.5 h), so taps and the
-07:00 daily run lag hours. Phase 10a adds an external trigger.
+07:00 daily run lag hours. Phase 10a added a Cloudflare Worker cron (`deploy/cloudflare-trigger/`) that dispatches the
+workflow every 10 min — deployed by the owner once (`wrangler login`, `wrangler deploy`, `secret put GH_TOKEN`).
+`workflow_dispatch` takes a `command` input (default `tick`): `gh workflow run raij.yml -f command=finalize`.
 
 **Full audit + improvement plan: `AUDIT_2026-09-23.md`** (local only, gitignored — read it before starting a phase).
 Sections A code, B security, C bot UX, D content strategy (with the owner decisions needed), E phases 10–15.
@@ -150,9 +165,9 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 
 | Phase | Scope | State |
 |---|---|---|
-| 10a | Ticks & state: A1 tick try/finally, A2 orphan row, A3 expire approved, A9 pause once, A10 bootstrap refresh, external cron trigger | ⬜ next |
+| 10a | Ticks & state: A1 tick try/finally, A2 orphan row, A3 expire approved, A9 pause once, A10 bootstrap refresh, external cron trigger | 🟡 code done 2026-09-23; Cloudflare trigger needs owner's `wrangler login` + GitHub token |
 | 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ⬜ |
-| 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths, S3 id regex, S4 owner id/reply check, S5–S8; `stage_run()` dedupe; missing tests | ⬜ |
+| 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths, S3 id regex, S4 owner id/reply check, S5–S8; `stage_run()` dedupe; missing tests | ⬜ next |
 | 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, expiry, retry button, setMyCommands, per-video pending edit | ⬜ |
 | 12 | Content I (needs owner decisions D1–D4): niche/region weights, fit score in classify, posting windows, SEO + playlists, CTA rotation, A/B titles | ⬜ |
 | 13 | Pick-before-render via Telegram; real series (templates, quotas, evergreen source) | ⬜ |
@@ -161,8 +176,8 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 
 Still pending from before:
 1. **Owner: Meta keys** — paste App ID, App Secret, short-lived token → exchange → add to .env →
-   `grep -vE '^(RAIJ_STATE_KEY)=' .env | gh secret set RAIJ_ENV -R Wael9912/raij`. #20 #21 #23 still owe IG/FB until
-   ≈2026-09-25 14:37 UTC (A3 makes them stall in state.enc until then).
+   `grep -vE '^(RAIJ_STATE_KEY)=' .env | gh secret set RAIJ_ENV -R Wael9912/raij`. IG/FB start with the first videos
+   approved after the keys exist (#20 #21 #23 were closed as `published` on 2026-09-23, owner's call).
 2. Watch the first unattended daily run's log: Gemini quota, edge-tts from GitHub IPs, render time.
 3. Later: YouTube Data API key (discovery), Pixabay key, CC0 music.
 

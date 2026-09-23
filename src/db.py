@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS videos (
     video_path      TEXT,
     duration_s      REAL,
     broll_manifest  TEXT,                           -- JSON: clip ids/urls/licenses
-    status          TEXT NOT NULL DEFAULT 'pending',-- pending|voiced|rendered|in_review|approved|rejected|superseded|failed
+    status          TEXT NOT NULL DEFAULT 'pending',-- pending|voiced|rendered|in_review|approved|published|expired|rejected|superseded|failed
     notes           TEXT,                           -- JSON: voice, rate, LUFS, warnings, failure reason
     parent_id       INTEGER,                        -- video this one regenerates (edit/new b-roll/re-voice)
     review_msg_id   INTEGER,                        -- Telegram message holding the review buttons

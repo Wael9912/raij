@@ -1,0 +1,21 @@
+# Cloudflare Worker that dispatches the `raij` GitHub workflow every 10 minutes (free plan: cron triggers
+# and 100k requests/day are included). GitHub's own `schedule` on this repo fires only every 2–3 h.
+#
+# Deploy (once, from this directory):   npx wrangler login && npx wrangler deploy
+# Token (once):                         npx wrangler secret put GH_TOKEN
+#   → a fine-grained GitHub PAT for the single repo, permission "Actions: Read and write", 1-year expiry.
+# Check:  npx wrangler tail   (or `gh run list --workflow raij.yml` — runs should be ~10 min apart, event workflow_dispatch)
+name = "raij-trigger"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+[vars]
+GH_REPO = "Wael9912/raij"
+GH_WORKFLOW = "raij.yml"
+GH_REF = "main"
+
+[observability]
+enabled = true

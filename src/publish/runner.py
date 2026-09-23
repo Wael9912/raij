@@ -6,7 +6,9 @@ One `posts` row per (video, platform): queued → published | exported | failed.
 attempt and is retried on later runs up to publish.max_attempts, then the owner gets a Telegram alert.
 Published/exported posts are never redone. A platform without keys is skipped (no row), so adding keys
 later picks up approved videos — unless they're older than publish.max_age_hours (trends go stale).
-When every platform is done, the video becomes 'published'.
+When every platform is done, the video becomes 'published'. An approved video older than max_age_hours
+is closed (`finalize`): 'published' if anything went out (skipped platforms noted), else 'expired' — so
+missing keys or dead retries can't keep it, and its media, in the state bundle forever (A3).
 """
 from __future__ import annotations
 
@@ -101,8 +103,9 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
 
     if db.publishing_paused(conn):
         log.warning("Publishing is paused (kill switch) — %d approved video(s) wait; `resume` to continue", len(videos))
-        if videos and not dry_run:
+        if videos and not dry_run and db.get_flag(conn, "paused_notice_sent") != "1":   # once per pause (A9)
             _notify(cfg, [f"⏸ Publishing is paused — {len(videos)} approved video(s) waiting."], bot)
+            db.set_flag(conn, "paused_notice_sent", "1")
         return 0
     if dry_run:
         log.info("[dry run] %d approved video(s) to publish", len(videos))
@@ -167,8 +170,12 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
 
     for name in sorted(skipped):
         log.info("%s skipped: %s", name, missing[name])
+    closed = finalize(cfg, conn, cfg.get("publish.max_age_hours", 72), platforms=platforms)
+    notices += [f"🏁 #{vid} closed as {status} (older than {cfg.get('publish.max_age_hours', 72)} h)"
+                for vid, status in closed]
     if run_id is None:
         log.info("Publish: nothing new to post (%d approved video(s) checked)", len(videos))
+        _notify(cfg, notices, bot)
         return 0
     _notify(cfg, notices, bot)
     status = "failed" if failed and not done else ("partial" if failed else "ok")
@@ -181,3 +188,45 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
     log.log(level, "Publish %s: %d post(s) done, %d failed, %d video(s) eligible", status, len(done), len(failed),
             len(videos))
     return 1 if status == "failed" else 0
+
+
+def finalize(cfg: Config, conn: sqlite3.Connection, max_age_hours: float | None, dry_run: bool = False,
+             platforms: dict | None = None) -> list[tuple[int, str]]:
+    """Close approved videos that won't go anywhere else. With `max_age_hours`, every approved video older than
+    that (which `eligible()` no longer offers to publish). With None (the `finalize` command), only videos whose
+    wanted platforms are each done, unconfigured or out of attempts — never one still being uploaded.
+    Result 'published' if any platform went out, else 'expired'; what was skipped is kept in videos.notes.publish."""
+    platforms = platforms or PLATFORMS
+    max_attempts = int(cfg.get("publish.max_attempts", 3))
+    missing = {name: check(cfg) for name, (check, _) in platforms.items()}
+    fresh = {v["id"] for v in eligible(conn, max_age_hours)} if max_age_hours else set()
+    closed: list[tuple[int, str]] = []
+    for v in eligible(conn):
+        if v["id"] in fresh:
+            continue
+        want = [p for p in _brand(cfg, v["brand_id"]).get("platforms", list(platforms)) if p in platforms]
+        posts = {r["platform"]: dict(r) for r in conn.execute("SELECT * FROM posts WHERE video_id = ?", (v["id"],))}
+        done = [p for p in want if posts.get(p, {}).get("status") in DONE]
+        pending = [p for p in want if p not in done and not missing[p]
+                   and posts.get(p, {}).get("attempts", 0) < max_attempts]
+        if max_age_hours is None and pending:
+            continue
+        status = "published" if done else "expired"
+        skipped = {p: (missing[p] or (posts.get(p) or {}).get("error") or "not attempted")
+                   for p in want if p not in done}
+        closed.append((v["id"], status))
+        if dry_run:
+            continue
+        notes = json.loads(v["notes"] or "{}")
+        notes["publish"] = {"done": done, "skipped": skipped, "closed_at": _now()}
+        conn.execute("UPDATE videos SET status = ?, notes = ? WHERE id = ?",
+                     (status, json.dumps(notes, ensure_ascii=False), v["id"]))
+        conn.commit()
+        log.info("Video %d closed as %s (done: %s; skipped: %s)", v["id"], status, ", ".join(done) or "-",
+                 ", ".join(skipped) or "-")
+    return closed
+
+
+def _now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")

@@ -135,6 +135,16 @@ and saves the state again if anything changed. Taps are handled within ~10–15 
 - Logs: the repo's **Actions** tab. TikTok copies arrive in Telegram. Weekly: the report + an encrypted DB backup.
 - Only one run at a time (`concurrency`); a run whose state restore failed never saves (an empty DB would re-post
   everything). A keep-alive commit every ~45 days stops GitHub pausing the schedule.
+- **Trigger:** GitHub's own `*/10` schedule fires only every 2–3 h on a small repo, so a free **Cloudflare Worker**
+  (`deploy/cloudflare-trigger/`) dispatches the workflow every 10 min. One-time setup from that directory:
+  `npx wrangler login` → `npx wrangler deploy` → `npx wrangler secret put GH_TOKEN` and paste a fine-grained GitHub
+  token (github.com → Settings → Developer settings → Fine-grained tokens: only the raij repo, permission
+  **Actions: Read and write**, expiry 1 year — put the renewal date in your calendar). Check with
+  `gh run list --workflow raij.yml`: runs ~10 min apart, event `workflow_dispatch`.
+- **Run a command on the live state:** Actions → raij → *Run workflow* → `command` (e.g. `finalize`,
+  `publish --dry-run`); or `gh workflow run raij.yml -f command=finalize`. The state is saved if it changed.
+- A failed or killed tick still saves its state (nothing is replayed the next tick), and every saved state older
+  than a week is also uploaded to the `state-bootstrap` release — the fallback if the cache is ever evicted.
 - Terms: GitHub intends Actions for software projects; if it ever disables the workflow, fall back to the Mac
   (`install-services` below) — restore the latest state first (`state unpack` on the weekly backup).
 

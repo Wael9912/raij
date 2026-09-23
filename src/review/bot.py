@@ -117,6 +117,7 @@ class Handler:
                 self.bot.send_message(self.chat, "⏸ Publishing paused.")
             elif cmd == "/resume":
                 db.set_flag(self.conn, "publishing_paused", "0")
+                db.set_flag(self.conn, "paused_notice_sent", "0")
                 self.bot.send_message(self.chat, "▶️ Publishing resumed.")
             elif cmd in ("/status", "/start"):
                 self.bot.send_message(self.chat, self.status())
@@ -148,14 +149,18 @@ class Handler:
     def _regenerate(self, vid: int, edit_note: str = "", new_broll: bool = False, revoice: bool = False) -> None:
         """Build a replacement video and send it; on failure, report and put the old one back up."""
         ctx = cards.context(self.conn, vid)
-        new_id = None
+        # The replacement row exists before any work starts (A2): a failure half-way must leave it 'failed',
+        # never 'voiced'/'pending' where tomorrow's assemble would pick it up and review would send a duplicate.
+        new_id = self.conn.execute("INSERT INTO videos (script_id, parent_id, status) VALUES (?, ?, 'pending')",
+                                   (ctx["script_id"], vid)).lastrowid
+        self.conn.commit()
         try:
-            new_id = self._build(ctx, edit_note, new_broll, revoice)
+            self._build(ctx, new_id, edit_note, new_broll, revoice)
         except Exception as exc:                               # tell the reviewer, keep the old video
             log.exception("Regenerating video %d failed", vid)
-            if new_id:
-                self.conn.execute("UPDATE videos SET status = 'failed' WHERE id = ?", (new_id,))
-                self.conn.commit()
+            self.conn.execute("UPDATE videos SET status = 'failed', notes = ? WHERE id = ?",
+                              (json.dumps({"failed": f"regeneration: {str(exc)[:300]}"}, ensure_ascii=False), new_id))
+            self.conn.commit()
             self.bot.send_message(self.chat, f"⚠️ Couldn't regenerate #{vid}: {str(exc)[:300]}\n"
                                              f"The original is back up for review.")
             self._soft(self.bot.edit_markup, self.chat, ctx["review_msg_id"], cards.keyboard(vid))
@@ -164,7 +169,7 @@ class Handler:
         self.conn.commit()
         send_card(self.cfg, self.conn, self.bot, self.chat, new_id, run=self.deps.preview_run)
 
-    def _build(self, ctx: dict[str, Any], edit_note: str, new_broll: bool, revoice: bool) -> int:
+    def _build(self, ctx: dict[str, Any], new_id: int, edit_note: str, new_broll: bool, revoice: bool) -> None:
         cfg, conn, d = self.cfg, self.conn, self.deps
         script_id, voice_path, duration, notes = ctx["script_id"], ctx["voice_path"], ctx["duration_s"], {}
         brand = next((b for b in cfg.brands if b["id"] == ctx["brand_id"]), {"id": ctx["brand_id"]})
@@ -183,11 +188,9 @@ class Handler:
             script_id = _save(conn, ctx["story_id"], ctx["brand_id"], outcome.versions)
             conn.execute("UPDATE scripts SET edit_note = ? WHERE id = ?", (edit_note, script_id))
             conn.execute("UPDATE scripts SET status = 'superseded' WHERE id = ?", (ctx["script_id"],))
+            conn.execute("UPDATE videos SET script_id = ? WHERE id = ?", (script_id, new_id))
             conn.commit()
 
-        new_id = conn.execute("INSERT INTO videos (script_id, parent_id, status) VALUES (?, ?, 'pending')",
-                              (script_id, ctx["id"])).lastrowid
-        conn.commit()
         if edit_note or revoice:
             script = dict(conn.execute("SELECT * FROM scripts WHERE id = ?", (script_id,)).fetchone())
             voice_name = None
@@ -221,7 +224,6 @@ class Handler:
                      (out["video_path"], out["subtitle_path"], json.dumps(out["manifest"], ensure_ascii=False),
                       out["duration_s"], json.dumps({**notes, **out["notes"]}, ensure_ascii=False), new_id))
         conn.commit()
-        return new_id
 
 
 def poll(cfg: Config, conn: sqlite3.Connection, bot: Bot, chat: str, deps: Deps | None = None,

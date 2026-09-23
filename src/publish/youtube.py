@@ -33,6 +33,7 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
 AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 UPLOAD_URI = "https://www.googleapis.com/upload/youtube/v3/videos"
+API_URI = "https://www.googleapis.com/youtube/v3"
 CHUNK = 8 * 1024 * 1024                    # multiple of 256 KiB, as the API requires
 # YouTube category ids by story category.
 CATEGORY_IDS = {"news-lite": "25", "tech": "28", "sports": "17", "culture": "24", "wow-facts": "27",
@@ -152,9 +153,34 @@ def metadata(cfg: Config, text: PostText) -> dict:
     }
 
 
+def existing(client: httpx.Client, auth: dict, title: str, days: int = 7) -> str | None:
+    """Id of a recent upload on the channel with exactly this title, if any (2 quota units). Guards against a
+    second upload when the state saved after the first one was lost (cache save failed, stale bootstrap)."""
+    from datetime import datetime, timedelta, timezone
+    try:
+        ch = request(client, "GET", f"{API_URI}/channels?part=contentDetails&mine=true", headers=auth).json()
+        uploads = ch["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+        items = request(client, "GET", f"{API_URI}/playlistItems?part=snippet&maxResults=25&playlistId={uploads}",
+                        headers=auth).json().get("items", [])
+    except (FetchError, KeyError, IndexError, ValueError) as exc:
+        log.warning("Couldn't list recent YouTube uploads (%s) — uploading without the duplicate check", exc)
+        return None
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for it in items:
+        s = it.get("snippet") or {}
+        if s.get("title") == title and (s.get("publishedAt") or "") >= since:
+            return (s.get("resourceId") or {}).get("videoId")
+    return None
+
+
 def publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, video_id: int) -> Posted:
     token = access_token(cfg, client)
     auth = {"Authorization": f"Bearer {token}"}
+    dup = existing(client, auth, metadata(cfg, text)["snippet"]["title"])
+    if dup:
+        log.warning("Video %d is already on YouTube as %s (same title, last 7 days) — adopting it, not re-uploading",
+                    video_id, dup)
+        return Posted(dup, f"https://youtube.com/shorts/{dup}")
     size = video.stat().st_size
     start = request(client, "POST", f"{UPLOAD_URI}?uploadType=resumable&part=snippet,status", json=metadata(cfg, text),
                     headers={**auth, "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": str(size)})

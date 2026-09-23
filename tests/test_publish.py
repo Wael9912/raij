@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -104,6 +105,86 @@ def test_pause_publishes_nothing(env):
     yt = Fake()
     assert runner.publish(cfg, conn, platforms=_platforms(youtube=yt), client=httpx.Client()) == 0
     assert yt.calls == [] and conn.execute("SELECT count(*) FROM posts").fetchone()[0] == 0
+
+
+def test_pause_notice_is_sent_once_until_resume(env):
+    """A9: every 10-min tick while paused must not repeat the '⏸ waiting' message."""
+    cfg, conn, _ = env
+    _video(cfg, conn)
+    db.set_flag(conn, "publishing_paused", "1")
+    sent = []
+    bot = type("B", (), {"send_message": lambda self, chat, text, **kw: sent.append(text)})()
+    for _ in range(3):
+        runner.publish(cfg, conn, platforms=_platforms(youtube=Fake()), client=httpx.Client(), bot=bot)
+    assert len(sent) == 1 and "paused" in sent[0]
+    db.set_flag(conn, "paused_notice_sent", "0")                  # what /resume and `resume` do
+    runner.publish(cfg, conn, platforms=_platforms(youtube=Fake()), client=httpx.Client(), bot=bot)
+    assert len(sent) == 2
+
+
+# --- closing approved videos (A3) -------------------------------------------
+
+def _age(conn, hours):
+    conn.execute("UPDATE approvals SET decided_at = datetime('now', ?)", (f"-{hours} hours",))
+    conn.commit()
+
+
+def test_stale_approved_video_with_a_post_is_closed_as_published(env):
+    cfg, conn, _ = env
+    _video(cfg, conn)
+    _brand_platforms(cfg, ["youtube", "instagram"])
+    yt, ig = Fake(), Fake(missing="no Meta keys")
+    plats = _platforms(youtube=yt, instagram=ig)
+    sent = []
+    bot = type("B", (), {"send_message": lambda self, chat, text, **kw: sent.append(text)})()
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=bot) == 0
+    assert conn.execute("SELECT status FROM videos").fetchone()[0] == "approved"     # still owes Instagram
+    _age(conn, 73)
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=bot) == 0
+    row = conn.execute("SELECT status, notes FROM videos").fetchone()
+    assert row["status"] == "published"
+    notes = json.loads(row["notes"])["publish"]
+    assert notes["done"] == ["youtube"] and notes["skipped"] == {"instagram": "no Meta keys"}
+    assert notes["closed_at"] and notes and json.loads(row["notes"])["credits"]      # older notes kept
+    assert any("#1 closed as published" in t for t in sent)
+    assert len(yt.calls) == 1 and ig.calls == []
+    # Idempotent: a closed video is never touched again.
+    runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=bot)
+    assert len(sent) == 2
+
+
+def test_stale_approved_video_with_nothing_out_expires(env):
+    cfg, conn, _ = env
+    _video(cfg, conn)
+    _brand_platforms(cfg, ["youtube"])
+    yt = Fake(missing="not authorized")
+    _age(conn, 100)
+    runner.publish(cfg, conn, platforms=_platforms(youtube=yt), client=httpx.Client())
+    row = conn.execute("SELECT status, notes FROM videos").fetchone()
+    assert row["status"] == "expired" and json.loads(row["notes"])["publish"]["skipped"] == {"youtube": "not authorized"}
+
+
+def test_finalize_now_closes_only_what_cannot_progress(env):
+    """`finalize` (max_age None): a video waiting on missing keys or dead retries closes; one with a
+    configured platform still to try is left alone."""
+    cfg, conn, _ = env
+    _video(cfg, conn, 1)
+    _video(cfg, conn, 2)
+    _brand_platforms(cfg, ["youtube", "facebook"])
+    conn.execute("INSERT INTO posts (video_id, approval_id, platform, status) VALUES (1, 1, 'youtube', 'published')")
+    conn.execute("INSERT INTO posts (video_id, approval_id, platform, status, attempts, error) "
+                 "VALUES (2, 2, 'youtube', 'failed', 3, 'boom')")
+    conn.commit()
+    plats = _platforms(youtube=Fake(), facebook=Fake(missing="no Meta keys"))
+    assert runner.finalize(cfg, conn, None, dry_run=True, platforms=plats) == [(1, "published"), (2, "expired")]
+    assert {r[0] for r in conn.execute("SELECT status FROM videos")} == {"approved"}          # dry run
+    plats = _platforms(youtube=Fake(), facebook=Fake())                                      # FB now configured
+    assert runner.finalize(cfg, conn, None, platforms=plats) == []                           # both can still post
+    plats = _platforms(youtube=Fake(), facebook=Fake(missing="no Meta keys"))
+    assert runner.finalize(cfg, conn, None, platforms=plats) == [(1, "published"), (2, "expired")]
+    assert json.loads(conn.execute("SELECT notes FROM videos WHERE id = 2").fetchone()[0])["publish"]["skipped"] == \
+        {"youtube": "boom", "facebook": "no Meta keys"}
+    assert runner.eligible(conn) == []
 
 
 def test_guardrail_refuses_file_outside_generated(env):
@@ -238,6 +319,12 @@ def test_youtube_resumable_upload_in_chunks(env, monkeypatch):
             assert b"refresh_token=rt" in req.content and b"grant_type=refresh_token" in req.content
             return httpx.Response(200, json={"access_token": "at"})
         assert req.headers["authorization"] == "Bearer at"
+        if req.method == "GET":                               # duplicate check: channel + recent uploads
+            if "channels" in req.url.path:
+                return httpx.Response(200, json={"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UU1"}}}]})
+            assert req.url.params["playlistId"] == "UU1"
+            return httpx.Response(200, json={"items": [{"snippet": {"title": "other #Shorts", "publishedAt": "2099-01-01T00:00:00Z",
+                                                                    "resourceId": {"videoId": "zzz"}}}]})
         if req.method == "POST":
             meta_ = json.loads(req.content)
             assert meta_["snippet"]["title"] == "عطل مفاجئ يضرب ميتا #Shorts"
@@ -254,6 +341,53 @@ def test_youtube_resumable_upload_in_chunks(env, monkeypatch):
     posted = youtube.publish(cfg, client, tmp / "assets/generated/video/1.mp4", post_text(runner.eligible(conn)[0]), 1)
     assert posted.url == "https://youtube.com/shorts/abc123"
     assert [s[2] for s in seen if s[0] == "PUT"] == ["bytes 0-399/1000", "bytes 400-799/1000", "bytes 800-999/1000"]
+
+
+def test_youtube_adopts_a_recent_upload_with_the_same_title(env, monkeypatch):
+    """A10: the state saved after an upload was lost (cache save failed / stale bootstrap) — the next attempt
+    must find the video on the channel instead of uploading it twice."""
+    cfg, conn, tmp = env
+    _yt_setup(tmp)
+    _video(cfg, conn)
+    uploads = []
+    recent = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def handler(req):
+        if req.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at"})
+        if req.method == "GET" and "channels" in req.url.path:
+            return httpx.Response(200, json={"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UU1"}}}]})
+        if req.method == "GET":
+            return httpx.Response(200, json={"items": [
+                {"snippet": {"title": "عطل مفاجئ يضرب ميتا #Shorts", "publishedAt": "2020-01-01T00:00:00Z",
+                             "resourceId": {"videoId": "old"}}},
+                {"snippet": {"title": "عطل مفاجئ يضرب ميتا #Shorts", "publishedAt": recent,
+                             "resourceId": {"videoId": "dup1"}}}]})
+        uploads.append(req.method)
+        return httpx.Response(500)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    posted = youtube.publish(cfg, client, tmp / "assets/generated/video/1.mp4", post_text(runner.eligible(conn)[0]), 1)
+    assert posted.external_id == "dup1" and uploads == []
+
+
+def test_youtube_uploads_when_the_duplicate_check_fails(env, monkeypatch):
+    cfg, conn, tmp = env
+    _yt_setup(tmp)
+    _video(cfg, conn)
+
+    def handler(req):
+        if req.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at"})
+        if req.method == "GET":
+            return httpx.Response(403, json={"error": "quotaExceeded"})
+        if req.method == "POST":
+            return httpx.Response(200, headers={"Location": "https://upload.example/s"})
+        return httpx.Response(200, json={"id": "new1"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    posted = youtube.publish(cfg, client, tmp / "assets/generated/video/1.mp4", post_text(runner.eligible(conn)[0]), 1)
+    assert posted.external_id == "new1"
 
 
 def test_youtube_revoked_token_says_reauth(env):

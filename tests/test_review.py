@@ -289,6 +289,25 @@ def test_failed_regeneration_puts_original_back(env, monkeypatch):
     assert restored["reply_markup"] == cards.keyboard(1)
 
 
+def test_failure_after_the_row_exists_leaves_no_orphan(env, monkeypatch):
+    """A2: voicing fails after the replacement row was created — it must end 'failed', not sit as
+    'pending'/'voiced' for the next assemble/review pass to pick up as a duplicate."""
+    cfg, conn, _ = env
+    _in_review(cfg, conn)
+    FakeBuild(monkeypatch, cfg)
+
+    def voice_script(*args, **kwargs):
+        raise RuntimeError("edge-tts 403")
+    monkeypatch.setattr(botmod, "voice_script", voice_script)
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
+    h.handle(_cb("rv:1"))
+    rows = conn.execute("SELECT id, status, parent_id, notes FROM videos ORDER BY id").fetchall()
+    assert [(r["id"], r["status"], r["parent_id"]) for r in rows] == [(1, "in_review", None), (2, "failed", 1)]
+    assert "edge-tts 403" in json.loads(rows[1]["notes"])["failed"]
+    assert any("Couldn't regenerate #1" in b.get("text", "") for m, b in tg.calls if m == "sendMessage")
+
+
 def test_poll_persists_offset(env):
     cfg, conn, _ = env
     _rendered(cfg, conn, status="in_review")
