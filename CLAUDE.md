@@ -131,6 +131,22 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   (`<script>_v<video>.wav`) → assemble → new video row (`parent_id`) → resent; old video `superseded`.
   New b-roll: same voice, `assemble_video(exclude=old stock ids)`. Re-voice: toggles brand `voice.alt`/`name`.
   Regeneration failure → message + original's buttons restored.
+- **Phase 11 (2026-09-23, audit C / U2–U9; owner's calls: English bot UI, never auto-expire cards, bulk commands
+  only behind a confirm tap):** caption = `🎬 #id · 48s · series` / `↩️ Replaces #N (what)` + edit note / Arabic
+  `hook_title` / `🔎 Why: trending on <source> — rank_reason` (≤180 chars) / description / tags / sources /
+  credits; version, similarity and voice sit at the end of the script message. `review` sends a **digest** first
+  (titles, flagged candidates and failed/partial runs of the last 24 h). **Edit prompts are per video**
+  (`control.pending_edits` = `{vid: {prompt, user, at}}`, 6 h each; the old `pending_edit` is still read once) and
+  the card keeps its buttons while a prompt is open. Commands: `/queue` (in review with age; approved with
+  `YouTube ✅ · Instagram 🔑 no keys · Facebook ⚠️ 2× · TikTok 📲`), `/status`, `/help`, `/approve_all` and
+  `/skip` → list + `ba:<max id>`/`bs:<max id>`/`bx` buttons (cards arriving after the ask are untouched),
+  `/report` (no backup — U7). Slash menu via `setMyCommands` once per `cards.COMMANDS` version
+  (`control.commands_version`, first tick after a deploy). **Reminders** (`review.runner.remind`, every tick):
+  cards in review ≥48 h and ≥`publish.max_age_hours` get one message per level, a `⌛ In review for …` caption
+  line (buttons kept) and `videos.notes.reminded_h`; nothing is decided for the owner. Publish notices say
+  `✅ #20 «title»` + platform name + link (TikTok: "copy sent above", no repo path); a final failure is its own
+  message with a **🔁 Retry** button (`rt:<vid>` → new `approved` row with note `retry`, failed posts reset to
+  queued/0 attempts). Weekly report: title line, then numbers line (RTL). Daily-failure notice links the Actions run.
 
 - **Phase 10a (2026-09-23, audit A1/A2/A3/A9/A10):** `main()` touches `data/.changed` in a `finally` for every
   writing command, and the workflow packs state whenever the Tick step didn't succeed (step timeout 150 min), so a
@@ -203,8 +219,8 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 | 10a | Ticks & state: A1 tick try/finally, A2 orphan row, A3 expire approved, A9 pause once, A10 bootstrap refresh, external cron trigger | ✅ 2026-09-23 (trigger deployed, dispatching every 10 min) |
 | 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ✅ 2026-09-23 |
 | 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths + authenticated bundle, S3 id regex/size cap, S4 owner id/reply check/expiry, S5–S8; `db.start_run/finish_run`; 20 new tests | ✅ 2026-09-23 |
-| 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, expiry, retry button, setMyCommands, per-video pending edit | ⬜ next |
-| 12 | Content I (needs owner decisions D1–D4): niche/region weights, fit score in classify, posting windows, SEO + playlists, CTA rotation, A/B titles | ⬜ |
+| 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, 48/72 h reminders (warn only), retry button, setMyCommands, per-video pending edit, /approve_all + /skip with confirm | ✅ 2026-09-23 |
+| 12 | Content I (needs owner decisions D1–D4): niche/region weights, fit score in classify, posting windows, SEO + playlists, CTA rotation, A/B titles | ⬜ next |
 | 13 | Pick-before-render via Telegram; real series (templates, quotas, evergreen source) | ⬜ |
 | 14 | Topic performance memory, traffic-source metrics, `tools`/affiliate series, second brand | ⬜ |
 | 15 | >60 s variants for TikTok/FB, weekly long-form compile | ⬜ |
