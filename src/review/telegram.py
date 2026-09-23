@@ -75,8 +75,16 @@ class Bot:
         return self.call("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,
                          reply_markup=reply_markup or {"inline_keyboard": []})
 
+    def edit_caption(self, chat_id: str, message_id: int, caption: str, reply_markup: dict | None = None) -> Any:
+        return self.call("editMessageCaption", chat_id=chat_id, message_id=message_id,
+                         caption=caption[:MAX_CAPTION], reply_markup=reply_markup)
+
     def answer(self, callback_id: str, text: str = "") -> Any:
         return self.call("answerCallbackQuery", callback_query_id=callback_id, text=text[:200])
+
+    def set_commands(self, commands: list[tuple[str, str]]) -> Any:
+        """The slash menu Telegram shows in the chat (U8)."""
+        return self.call("setMyCommands", commands=[{"command": c, "description": d[:256]} for c, d in commands])
 
     def updates(self, offset: int | None, timeout: int = 30) -> list[dict]:
         return self.call("getUpdates", offset=offset, timeout=timeout,

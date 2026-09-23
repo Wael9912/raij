@@ -103,15 +103,44 @@ def _prompt_id(tg):
 def test_caption_has_hook_sources_credits_and_fits(env):
     cfg, conn, _ = env
     _rendered(cfg, conn)
-    cap = cards.caption(cards.context(conn, 1))
-    assert cap.startswith("🎬 #1 · 48s · script v1") and "FIFA may reform" in cap
+    conn.execute("UPDATE candidates SET rank_reason = 'big fan reaction', category = 'sports'")
+    conn.commit()
+    ctx = cards.context(conn, 1)
+    cap = cards.caption(ctx)
+    assert cap.startswith("🎬 #1 · 48s\n\nهل سمعت\n\n🔎 Why: trending on news — big fan reaction")
+    assert "script v1" not in cap and "similarity" not in cap            # jargon moved to the script message (U8)
     assert "Sources: skynewsarabia.com" in cap and "Photo: Jane / CC BY 4.0" in cap and len(cap) <= 1024
+    assert cards.script_text(ctx).endswith("🔧 script v1 · similarity n/a (non-Arabic source) · voice ar-EG-ShakirNeural")
+
+
+def test_caption_uses_the_arabic_hook_title_and_series(env):
+    """U3: the caption shows the title burned into the video (also the YouTube title), not the English hook."""
+    cfg, conn, _ = env
+    _rendered(cfg, conn)
+    conn.execute("UPDATE scripts SET notes = ?", (json.dumps({"hook_title": "إصلاحات الفيفا", "series": "رياضة في دقيقة"},
+                                                             ensure_ascii=False),))
+    conn.commit()
+    cap = cards.caption(cards.context(conn, 1))
+    assert cap.startswith("🎬 #1 · 48s · رياضة في دقيقة\n\nإصلاحات الفيفا\n") and "FIFA may reform" not in cap
+
+
+def test_regenerated_card_names_its_parent(env):
+    """U4: a replacement card says which card it replaces and why."""
+    cfg, conn, _ = env
+    _rendered(cfg, conn, status="superseded")
+    conn.execute("INSERT INTO approvals (video_id, decision, note) VALUES (1, 'edit', 'shorter hook')")
+    conn.execute("INSERT INTO videos (script_id, video_path, duration_s, status, parent_id) "
+                 "VALUES (1, 'assets/generated/video/1.mp4', 47, 'rendered', 1)")
+    conn.commit()
+    cap = cards.caption(cards.context(conn, 2))
+    assert "↩️ Replaces #1 (script edited)\n✏️ shorter hook" in cap
 
 
 def test_keyboard_roundtrip():
     datas = [b["callback_data"] for row in cards.keyboard(9)["inline_keyboard"] for b in row]
     assert [cards.parse_callback(d) for d in datas] == [("ap", 9), ("rj", 9), ("ed", 9), ("nb", 9), ("rv", 9)]
     assert cards.parse_callback("zz:9") is None and cards.parse_callback("ap:x") is None
+    assert cards.parse_callback("rt:9") == ("rt", 9) and cards.parse_callback("ba:9") == ("ba", 9)
 
 
 # --- review stage --------------------------------------------------------------
@@ -121,11 +150,25 @@ def test_review_sends_video_and_script_once(env):
     _rendered(cfg, conn)
     tg = FakeTelegram()
     assert runner.review(cfg, conn, bot=tg.bot()) == 0
-    assert tg.methods() == ["sendVideo", "sendMessage"]
-    assert "إنفانتينو" in tg.calls[1][1]["text"] and tg.calls[1][1]["reply_to_message_id"] == 101
+    assert tg.methods() == ["sendMessage", "sendVideo", "sendMessage"]          # digest, card, script
+    assert tg.calls[0][1]["text"].startswith("📬 1 new video to review\n#1\nهل سمعت")
+    assert "إنفانتينو" in tg.calls[2][1]["text"] and tg.calls[2][1]["reply_to_message_id"] == 102
     row = conn.execute("SELECT status, review_msg_id FROM videos").fetchone()
-    assert (row["status"], row["review_msg_id"]) == ("in_review", 101)
-    assert runner.review(cfg, conn, bot=tg.bot()) == 0 and len(tg.calls) == 2      # idempotent
+    assert (row["status"], row["review_msg_id"]) == ("in_review", 102)
+    assert runner.review(cfg, conn, bot=tg.bot()) == 0 and len(tg.calls) == 3      # idempotent, no digest either
+
+
+def test_digest_lists_flagged_and_stage_trouble(env):
+    cfg, conn, _ = env
+    _rendered(cfg, conn)
+    upsert_candidates(conn, [Candidate(source="rss", external_id="e2", canonical_url="https://x.example/2",
+                                       title="Election riots")])
+    conn.execute("UPDATE candidates SET status = 'flagged' WHERE id = 2")
+    db.finish_run(conn, db.start_run(conn, "extract"), "partial", {})
+    db.finish_run(conn, db.start_run(conn, "voice"), "ok", {})
+    text = cards.digest_text(conn, [1])
+    assert "🚩 1 flagged (political, not scheduled)\n• Election riots" in text
+    assert "⚠️ 1 stage run with problems\n• extract partial" in text and "voice" not in text
 
 
 def test_review_without_telegram_config_changes_nothing(env, monkeypatch):
@@ -197,11 +240,38 @@ def test_edit_note_must_reply_to_the_prompt(env, monkeypatch):
     h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
     h.handle(_cb("ed:1"))
     prompt = _prompt_id(tg)
+    assert "editMessageReplyMarkup" not in tg.methods()            # the card keeps its buttons while asking (U2)
     h.handle(_msg("just chatting"))
-    assert "edit_note" not in fb.calls and db.get_flag(conn, "pending_edit") != "null"
-    assert "reply to the ✏️ prompt" in tg.calls[-1][1]["text"] and tg.calls[-1][1]["reply_to_message_id"] == prompt
+    assert "edit_note" not in fb.calls and "1" in json.loads(db.get_flag(conn, "pending_edits"))
+    assert "To edit #1, reply to its ✏️ prompt" in tg.calls[-1][1]["text"]
     h.handle(_msg("the real note", reply_to=prompt))
-    assert fb.calls["edit_note"] == "the real note" and db.get_flag(conn, "pending_edit") == "null"
+    assert fb.calls["edit_note"] == "the real note" and db.get_flag(conn, "pending_edits") == "{}"
+
+
+def test_two_edit_prompts_are_kept_apart(env, monkeypatch):
+    """U2: ✏️ on two cards → two open prompts; each reply rewrites its own video, the other stays open."""
+    cfg, conn, _ = env
+    _in_review(cfg, conn)
+    conn.execute("INSERT INTO videos (script_id, video_path, duration_s, status, review_msg_id) "
+                 "VALUES (1, 'assets/generated/video/1.mp4', 47, 'in_review', 151)")
+    conn.commit()
+    fb = FakeBuild(monkeypatch, cfg)
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
+    h.handle(_cb("ed:1"))
+    prompt1 = _prompt_id(tg)
+    h.handle(_cb("ed:2"))
+    prompt2 = _prompt_id(tg)
+    assert set(json.loads(db.get_flag(conn, "pending_edits"))) == {"1", "2"}
+    h.handle(_msg("note for two", reply_to=prompt2))
+    assert fb.calls["edit_note"] == "note for two"
+    assert conn.execute("SELECT status FROM videos WHERE id = 2").fetchone()[0] == "superseded"
+    assert conn.execute("SELECT status FROM videos WHERE id = 1").fetchone()[0] == "in_review"
+    assert list(json.loads(db.get_flag(conn, "pending_edits"))) == ["1"]
+    h.handle(_cb("ap:1"))                                          # approving cancels its open prompt
+    assert db.get_flag(conn, "pending_edits") == "{}"
+    h.handle(_msg("late note", reply_to=prompt1))
+    assert conn.execute("SELECT count(*) FROM approvals WHERE decision = 'edit'").fetchone()[0] == 1
 
 
 def test_edit_prompt_expires(env, monkeypatch):
@@ -212,13 +282,26 @@ def test_edit_prompt_expires(env, monkeypatch):
     h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
     h.handle(_cb("ed:1"))
     prompt = _prompt_id(tg)
-    pending = json.loads(db.get_flag(conn, "pending_edit"))
-    pending["at"] -= botmod.EDIT_NOTE_TTL + 1
-    db.set_flag(conn, "pending_edit", json.dumps(pending))
+    pending = json.loads(db.get_flag(conn, "pending_edits"))
+    pending["1"]["at"] -= botmod.EDIT_NOTE_TTL + 1
+    db.set_flag(conn, "pending_edits", json.dumps(pending))
     h.handle(_msg("too late", reply_to=prompt))
-    assert "edit_note" not in fb.calls and db.get_flag(conn, "pending_edit") == "null"
+    assert "edit_note" not in fb.calls and db.get_flag(conn, "pending_edits") == "{}"
     assert "expired" in tg.calls[-1][1]["text"]
     assert conn.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
+
+
+def test_legacy_single_pending_edit_flag_is_honoured(env, monkeypatch):
+    """A prompt opened by the pre-11 bot (control.pending_edit) still takes its reply after the upgrade."""
+    cfg, conn, _ = env
+    _in_review(cfg, conn)
+    fb = FakeBuild(monkeypatch, cfg)
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg, botmod.Deps(stock_client=httpx.Client()))
+    import time
+    db.set_flag(conn, "pending_edit", json.dumps({"video_id": 1, "prompt": 77, "user": CHAT, "at": time.time()}))
+    h.handle(_msg("old-style note", reply_to=77))
+    assert fb.calls["edit_note"] == "old-style note" and db.get_flag(conn, "pending_edit") == "null"
 
 
 def test_callback_rejects_non_ascii_digits():
@@ -280,7 +363,131 @@ def test_pause_resume_status(env):
     h.handle(_msg("/resume"))
     assert not db.publishing_paused(conn)
     h.handle(_msg("/status"))
-    assert "in_review: 1" in tg.calls[-1][1]["text"]
+    assert "1 in review" in tg.calls[-1][1]["text"] and "▶️ on" in tg.calls[-1][1]["text"]
+
+
+def test_queue_lists_review_and_publishing_state(env):
+    cfg, conn, _ = env
+    _rendered(cfg, conn, status="in_review")
+    conn.execute("INSERT INTO videos (script_id, video_path, duration_s, status) "
+                 "VALUES (1, 'assets/generated/video/1.mp4', 47, 'approved')")
+    conn.execute("INSERT INTO approvals (video_id, decision, decided_at) VALUES (2, 'approved', '2026-09-20 10:00:00')")
+    conn.execute("INSERT INTO posts (video_id, approval_id, platform, status, url) VALUES (2, 1, 'youtube', 'published', 'u')")
+    conn.execute("INSERT INTO posts (video_id, approval_id, platform, status, attempts) VALUES (2, 1, 'facebook', 'failed', 2)")
+    conn.commit()
+    cfg.brands[0]["platforms"] = ["youtube", "instagram", "facebook", "tiktok_export"]
+    from datetime import datetime, timezone
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+    text = cards.queue_text(conn, cfg, {"instagram": "no keys"}, now=now)
+    assert text.startswith("📥 In review: 1\n#1 · ")
+    assert "📤 Approved, publishing: 1\n#2 · approved 26 h ago\nهل سمعت\n" in text
+    assert "YouTube ✅ · Instagram 🔑 no keys · Facebook ⚠️ 2× · TikTok ⏳" in text
+    conn.execute("UPDATE videos SET status = 'published'")
+    conn.commit()
+    assert cards.queue_text(conn, cfg).startswith("📭 Queue is empty")
+
+
+def test_help_and_unknown_command(env):
+    cfg, conn, _ = env
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg)
+    h.handle(_msg("/help"))
+    assert tg.calls[-1][1]["text"].startswith("🤖 Ra'ij review bot")
+    h.handle(_msg("/frobnicate"))
+    assert "Unknown command /frobnicate" in tg.calls[-1][1]["text"]
+
+
+def test_report_command_sends_no_backup(env, monkeypatch):
+    """U7: /report is the numbers only; the encrypted DB copy stays weekly."""
+    cfg, conn, _ = env
+    monkeypatch.setenv("RAIJ_STATE_KEY", "k")
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg)
+    h.handle(_msg("/report"))
+    assert tg.methods() == ["sendMessage"] and "weekly report" in tg.calls[-1][1]["text"]
+
+
+def test_slash_menu_registered_once_per_version(env):
+    cfg, conn, _ = env
+    tg = FakeTelegram()
+    assert botmod.ensure_commands(conn, tg.bot()) is True
+    assert tg.methods() == ["setMyCommands"]
+    assert [c["command"] for c in tg.calls[0][1]["commands"]][:2] == ["queue", "status"]
+    assert botmod.ensure_commands(conn, tg.bot()) is False and len(tg.calls) == 1
+
+
+@pytest.mark.parametrize("cmd, act, decision", [("/approve_all", "ba", "approved"), ("/skip", "bs", "rejected")])
+def test_bulk_commands_need_a_confirm_tap(env, cmd, act, decision):
+    cfg, conn, _ = env
+    _in_review(cfg, conn)
+    conn.execute("INSERT INTO videos (script_id, video_path, duration_s, status, review_msg_id) "
+                 "VALUES (1, 'assets/generated/video/1.mp4', 47, 'in_review', 151)")
+    conn.commit()
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg)
+    h.handle(_msg(cmd))
+    ask = tg.calls[-1][1]
+    assert ask["text"].startswith(("Approve" if act == "ba" else "Reject") + " all 2 cards in review?\n#1\n")
+    assert ask["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == f"{act}:2"
+    assert conn.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0        # nothing until confirmed
+    h.handle(_cb("bx:2"))
+    assert "Cancelled" in tg.calls[-1][1]["text"] and conn.execute("SELECT count(*) FROM approvals").fetchone()[0] == 0
+    conn.execute("INSERT INTO videos (script_id, video_path, duration_s, status, review_msg_id) "
+                 "VALUES (1, 'assets/generated/video/1.mp4', 47, 'in_review', 161)")   # arrives after the ask
+    conn.commit()
+    h.handle(_cb(f"{act}:2"))
+    rows = conn.execute("SELECT id, status FROM videos ORDER BY id").fetchall()
+    assert [tuple(r) for r in rows] == [(1, decision), (2, decision), (3, "in_review")]
+    assert conn.execute("SELECT count(*) FROM approvals WHERE decision = ?", (decision,)).fetchone()[0] == 2
+    assert f"2 cards: #1, #2" in tg.calls[-1][1]["text"]
+    h.handle(_msg(cmd))
+    h.handle(_cb(f"{act}:3"))
+    assert conn.execute("SELECT status FROM videos WHERE id = 3").fetchone()[0] == decision
+
+
+def test_retry_button_requeues_failed_platforms(env):
+    """U9: 🔁 on a final failure re-approves the video and resets its failed posts."""
+    cfg, conn, _ = env
+    _rendered(cfg, conn, status="approved")
+    conn.execute("INSERT INTO approvals (video_id, decision, decided_at) VALUES (1, 'approved', '2026-09-01 00:00:00')")
+    conn.execute("INSERT INTO posts (video_id, approval_id, platform, status, url) VALUES (1, 1, 'youtube', 'published', 'u')")
+    conn.execute("INSERT INTO posts (video_id, approval_id, platform, status, attempts, error, last_attempt_at) "
+                 "VALUES (1, 1, 'facebook', 'failed', 3, 'boom', '2026-09-02 00:00:00')")
+    conn.commit()
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg)
+    h.handle(_cb("rt:1"))
+    fb = dict(conn.execute("SELECT * FROM posts WHERE platform = 'facebook'").fetchone())
+    assert (fb["status"], fb["attempts"], fb["error"], fb["last_attempt_at"]) == ("queued", 0, None, None)
+    assert conn.execute("SELECT status FROM posts WHERE platform = 'youtube'").fetchone()[0] == "published"
+    latest = conn.execute("SELECT decision, note FROM approvals ORDER BY id DESC LIMIT 1").fetchone()
+    assert tuple(latest) == ("approved", "retry")
+    assert "queued again for Facebook" in tg.calls[-1][1]["text"]
+    h.handle(_cb("rt:1", cid="cb2"))
+    assert "nothing to retry" in tg.calls[-1][1]["text"]
+
+
+def test_reminders_warn_at_48_and_72_hours_without_deciding(env):
+    """U5 (owner's call: warn only). One nudge per level, caption gets a ⌛ line, buttons stay, status unchanged."""
+    from datetime import datetime, timedelta, timezone
+    cfg, conn, _ = env
+    _in_review(cfg, conn)
+    conn.execute("UPDATE videos SET created_at = '2026-09-20 00:00:00'")
+    conn.commit()
+    tg = FakeTelegram()
+    bot = tg.bot()
+    at = lambda h: datetime(2026, 9, 20, tzinfo=timezone.utc) + timedelta(hours=h)      # noqa: E731
+    assert runner.remind(cfg, conn, bot, CHAT, now=at(47)) == []
+    assert runner.remind(cfg, conn, bot, CHAT, now=at(49)) == [1]
+    assert tg.methods() == ["sendMessage", "editMessageCaption"]
+    assert tg.calls[0][1]["text"].startswith("⌛ 1 card in review for over 48 h — decide soon")
+    assert tg.calls[1][1]["caption"].startswith("⌛ In review for 2 d 1 h\n\n🎬 #1")
+    assert tg.calls[1][1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "ap:1"
+    assert runner.remind(cfg, conn, bot, CHAT, now=at(60)) == [] and len(tg.calls) == 2      # not again at 48
+    assert runner.remind(cfg, conn, bot, CHAT, now=datetime(2026, 9, 23, 1, 0, tzinfo=timezone.utc)) == [1]
+    assert "over 72 h — the trend is going stale" in tg.calls[2][1]["text"]
+    assert conn.execute("SELECT status FROM videos").fetchone()[0] == "in_review"
+    assert json.loads(conn.execute("SELECT notes FROM videos").fetchone()[0])["reminded_h"] == 72
 
 
 class FakeBuild:

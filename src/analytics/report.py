@@ -71,10 +71,12 @@ def weekly_text(conn: sqlite3.Connection, days: int = 7) -> str:
     if ret:
         lines.append(f"Avg watched on YouTube: {sum(ret) / len(ret):.0f}%")
     lines.append("")
+    # An Arabic title and Latin numbers on one line get jumbled by RTL rendering: title alone, numbers next line.
     for i, v in enumerate(vids, 1):
-        per = " · ".join(f"{p} {n:,}" for p, n in sorted(v["platforms"].items()))
+        per = " · ".join(f"{n:,} {p}" for p, n in sorted(v["platforms"].items()))
         watched = f" · {v['retention_pct']:.0f}% watched" if v["retention_pct"] is not None else ""
-        lines.append(f"{i}. {v['title']} — {v['views']:,} views ({per}){watched}")
+        lines.append(f"{i}. {v['title']}")
+        lines.append(f"   {v['views']:,} views ({per}){watched}")
     series: dict[str, int] = {}
     for v in vids:
         key = v["series"] or v["category"] or "?"

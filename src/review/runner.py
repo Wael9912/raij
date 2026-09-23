@@ -73,6 +73,55 @@ def _pending(conn: sqlite3.Connection) -> list[int]:
         "SELECT id FROM videos WHERE status = 'rendered' AND review_msg_id IS NULL ORDER BY id")]
 
 
+def send_digest(cfg: Config, conn: sqlite3.Connection, bot: Bot, chat: str, video_ids: list[int]) -> None:
+    """One message before the day's burst of cards: titles, flagged items, stage trouble. Cosmetic — a failure
+    here must not stop the cards."""
+    if not video_ids:
+        return
+    try:
+        bot.send_message(chat, cards.digest_text(conn, video_ids), disable_web_page_preview=True)
+    except TelegramError as exc:
+        log.warning("Digest not sent: %s", exc)
+
+
+REMIND_AT = (48, 72)          # hours in review; the second is publish.max_age_hours by default
+
+
+def remind(cfg: Config, conn: sqlite3.Connection, bot: Bot, chat: str, now=None) -> list[int]:
+    """Warn about cards waiting too long (U5) — never decide for the owner (their call: warn only). Each card gets
+    one reminder per level, recorded in videos.notes.reminded_h; the caption gets a ⌛ line, buttons stay."""
+    max_age = int(cfg.get("publish.max_age_hours", 72))
+    levels = sorted({REMIND_AT[0], max_age} if max_age > REMIND_AT[0] else {max_age})
+    due: dict[int, list[dict]] = {}
+    for v in cards.in_review(conn):
+        hours = cards.age_hours(v["created_at"], now) or 0
+        done = int((json.loads(v["notes"] or "{}") or {}).get("reminded_h") or 0)
+        level = max((lv for lv in levels if hours >= lv), default=0)
+        if level and level > done:
+            due.setdefault(level, []).append(v)
+    warned: list[int] = []
+    for level, group in sorted(due.items()):
+        try:
+            bot.send_message(chat, cards.reminder_text(group, level, max_age), disable_web_page_preview=True)
+        except TelegramError as exc:
+            log.warning("Reminder not sent: %s", exc)
+            continue
+        for v in group:
+            notes = json.loads(v["notes"] or "{}") or {}
+            notes["reminded_h"] = level
+            conn.execute("UPDATE videos SET notes = ? WHERE id = ?", (json.dumps(notes, ensure_ascii=False), v["id"]))
+            msg_id = conn.execute("SELECT review_msg_id FROM videos WHERE id = ?", (v["id"],)).fetchone()[0]
+            try:
+                ctx = cards.context(conn, v["id"])
+                bot.edit_caption(chat, msg_id, f"⌛ In review for {cards.age_text(v['created_at'], now)}\n\n"
+                                 + cards.caption(ctx), reply_markup=cards.keyboard(v["id"]))
+            except (TelegramError, KeyError) as exc:
+                log.info("Caption not updated for #%d: %s", v["id"], exc)
+            warned.append(v["id"])
+        conn.commit()
+    return warned
+
+
 def review(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, bot: Bot | None = None,
            run: RunCmd = run_cmd) -> int:
     pending = _pending(conn)
@@ -99,6 +148,8 @@ def review(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, bot: Bo
         log.error("Telegram not configured: %s (see SETUP.md §4)", exc)
         retry = [{"video_id": v, "error": str(exc)} for v in pending]
         pending = []
+    if pending:
+        send_digest(cfg, conn, bot, chat, pending)
     for vid in pending:
         try:
             send_card(cfg, conn, bot, chat, vid, run=run)

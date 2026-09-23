@@ -211,7 +211,8 @@ def test_publish_all_platforms_then_idempotent(env):
     rows = conn.execute("SELECT platform, status, external_id, approval_id, attempts FROM posts ORDER BY platform").fetchall()
     assert [tuple(r) for r in rows] == [("instagram", "published", "ext1", 1, 1), ("youtube", "published", "ext1", 1, 1)]
     assert conn.execute("SELECT status FROM videos").fetchone()[0] == "published"
-    assert yt.calls == [("1.mp4", "عطل مفاجئ يضرب ميتا", 1)] and "✅ #1 → youtube" in sent[0]
+    assert yt.calls == [("1.mp4", "عطل مفاجئ يضرب ميتا", 1)]
+    assert "✅ #1 «عطل مفاجئ يضرب ميتا»\nYouTube: https://p.example/1" in sent[0]      # title + link (C)
     assert runner.publish(cfg, conn, platforms=_platforms(youtube=yt, instagram=ig), client=httpx.Client(), bot=bot) == 0
     assert len(yt.calls) == 1 and len(ig.calls) == 1              # never redone
 
@@ -233,8 +234,9 @@ def test_partial_failure_retries_then_alerts_once(env):
     _video(cfg, conn)
     _brand_platforms(cfg, ["youtube", "facebook"])
     yt, fb = Fake(), Fake(fail=5)
-    sent = []
-    bot = type("B", (), {"send_message": lambda self, chat, text, **kw: sent.append(text)})()
+    sent, markups = [], []
+    bot = type("B", (), {"send_message": lambda self, chat, text, **kw: (sent.append(text),
+                                                                          markups.append(kw.get("reply_markup")))})()
     plats = _platforms(youtube=yt, facebook=fb)
     assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=bot) == 0     # partial
     for _ in range(4):
@@ -243,8 +245,9 @@ def test_partial_failure_retries_then_alerts_once(env):
     post = dict(conn.execute("SELECT * FROM posts WHERE platform = 'facebook'").fetchone())
     assert post["status"] == "failed" and post["attempts"] == 3 and "boom" in post["error"]
     assert len(fb.calls) == 3 and len(yt.calls) == 1
-    alerts = [t for t in sent if "giving up" in t]
-    assert len(alerts) == 1 and "facebook" in alerts[0]
+    alerts = [(t, m) for t, m in zip(sent, markups) if "giving up" in t]
+    assert len(alerts) == 1 and "Facebook" in alerts[0][0] and "«عطل مفاجئ يضرب ميتا»" in alerts[0][0]
+    assert alerts[0][1]["inline_keyboard"][0][0]["callback_data"] == "rt:1"           # 🔁 Retry button (U9)
 
 
 def test_failure_then_success_on_retry(env):

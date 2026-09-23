@@ -154,7 +154,8 @@ def test_weekly_report_totals_and_ranking(env):
     _metric(conn, _published(conn, 3, "culture", "قديم", days_ago=12), 9999)          # outside the week
     text = rep.weekly_text(conn)
     assert "2 video(s) · 4,200 views · 230 likes" in text and "Avg watched on YouTube: 68%" in text
-    assert text.index("1. الفيفا — 3,000 views (youtube 3,000) · 71% watched") < text.index("2. عطل ميتا")
+    # RTL-safe: the Arabic title stands alone on its line, the numbers follow on the next (U: report lines)
+    assert text.index("1. الفيفا\n   3,000 views (3,000 youtube) · 71% watched") < text.index("2. عطل ميتا\n")
     assert "قديم" not in text and "Next picks lean toward: sports, tech" in text
 
 

@@ -41,6 +41,7 @@ PLATFORMS: dict[str, tuple[Callable[[Config], str | None], Publisher]] = {
     "tiktok_export": (tiktok.missing, tiktok.export),
 }
 DONE = ("published", "exported")
+PLATFORM_NAME = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook", "tiktok_export": "TikTok"}
 
 
 def eligible(conn: sqlite3.Connection, max_age_hours: float | None = None) -> list[dict[str, Any]]:
@@ -80,8 +81,9 @@ def retry_due(post: dict[str, Any], schedule: list[float], now: datetime | None 
     return (now or datetime.now(timezone.utc)) >= last + timedelta(hours=float(wait))
 
 
-def _notify(cfg: Config, lines: list[str], bot=None) -> None:
-    if not lines:
+def _notify(cfg: Config, lines: list[str], bot=None, retries: list[tuple[int, str]] | None = None) -> None:
+    """One summary message, then one message with a 🔁 Retry button per video that ran out of attempts (U9)."""
+    if not lines and not retries:
         return
     try:
         if bot is None:
@@ -89,9 +91,25 @@ def _notify(cfg: Config, lines: list[str], bot=None) -> None:
             bot, chat = make_bot(cfg)
         else:
             chat = cfg.secret("TELEGRAM_CHAT_ID")
-        bot.send_message(chat, "\n".join(lines), disable_web_page_preview=True)
+        if lines:
+            bot.send_message(chat, "\n".join(lines), disable_web_page_preview=True)
+        from src.review import cards
+        for vid, text in retries or []:
+            bot.send_message(chat, text, disable_web_page_preview=True, reply_markup=cards.retry_keyboard(vid))
     except Exception as exc:                            # an alert failing must not fail the publish
         log.warning("Telegram notice not sent: %s", exc)
+
+
+def _label(v: dict[str, Any]) -> str:
+    """'#20 «Arabic title»' — the id alone meant nothing to the owner (C)."""
+    from src.review import cards
+    return f"#{v['id']} «{cards.title_of(v)}»"
+
+
+def _link(name: str, res: Posted) -> str:
+    if res.status == "exported":                        # TikTok: the copy went to Telegram; a repo path is noise
+        return "copy sent above — upload from your phone"
+    return res.url
 
 
 def publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,
@@ -134,7 +152,7 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
     # The runs row is created at the first real attempt, so a pass with nothing to do writes nothing
     # (keeps idle GitHub Actions ticks from re-saving the state).
     run_id = None
-    done, failed, skipped, notices = [], [], set(), []
+    done, failed, skipped, notices, retries = [], [], set(), [], []
     own_client = client is None
     client = client or make_client()
     try:
@@ -169,14 +187,16 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                                 max_attempts, msg)
                     failed.append({"video_id": v["id"], "platform": name, "error": msg, "final": last})
                     if last:
-                        notices.append(f"⚠️ #{v['id']} → {name} failed {max_attempts}× — giving up: {msg[:200]}")
+                        retries.append((v["id"], f"⚠️ {_label(v)}\n{PLATFORM_NAME.get(name, name)} failed "
+                                                 f"{max_attempts}× — giving up.\n{msg[:200]}"))
                     continue
                 conn.execute("UPDATE posts SET status = ?, external_id = ?, url = ?, error = NULL, "
                              "published_at = datetime('now') WHERE id = ?",
                              (res.status, res.external_id, res.url, post["id"]))
                 conn.commit()
                 done.append({"video_id": v["id"], "platform": name, "url": res.url})
-                notices.append(f"✅ #{v['id']} → {name}: {res.url}")
+                notices.append(f"{'📲' if res.status == 'exported' else '✅'} {_label(v)}\n"
+                               f"{PLATFORM_NAME.get(name, name)}: {_link(name, res)}")
                 log.info("Video %d → %s %s: %s", v["id"], name, res.status, res.url)
             finished = conn.execute("SELECT count(*) FROM posts WHERE video_id = ? AND status IN ('published', 'exported')",
                                     (v["id"],)).fetchone()[0]
@@ -196,7 +216,7 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
         log.info("Publish: nothing new to post (%d approved video(s) checked)", len(videos))
         _notify(cfg, notices, bot)
         return 0
-    _notify(cfg, notices, bot)
+    _notify(cfg, notices, bot, retries)
     status = "failed" if failed and not done else ("partial" if failed else "ok")
     notes = {"videos": len(videos), "done": done, "failed": failed,
              "skipped": {n: missing[n] for n in sorted(skipped)}}

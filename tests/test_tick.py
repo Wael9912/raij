@@ -43,9 +43,13 @@ def _wire(monkeypatch, tg, publish=None, daily=None):
 
 def test_idle_tick_writes_nothing(env, monkeypatch):
     cfg, conn, tmp = env
-    _wire(monkeypatch, FakeTelegram())
+    tg = FakeTelegram()
+    _wire(monkeypatch, tg)
     assert main.cmd_tick(cfg, conn, _args()) == 0
-    assert not _changed(tmp)
+    assert _changed(tmp) and "setMyCommands" in tg.methods()      # first tick after a deploy: slash menu once (U8)
+    (tmp / "data" / ".changed").unlink()
+    assert main.cmd_tick(cfg, conn, _args()) == 0
+    assert not _changed(tmp) and tg.methods().count("setMyCommands") == 1
 
 
 def test_taps_are_drained_and_marked(env, monkeypatch):

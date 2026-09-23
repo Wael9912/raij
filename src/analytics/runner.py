@@ -35,7 +35,8 @@ def _save(conn: sqlite3.Connection, post_id: int, m: collect.Metric) -> None:
                  (post_id, m.views, m.likes, m.comments, m.shares, m.avg_watch_s, m.retention_pct))
 
 
-def send_weekly(cfg: Config, conn: sqlite3.Connection, bot=None) -> str:
+def send_weekly(cfg: Config, conn: sqlite3.Connection, bot=None, backup: bool = True) -> str:
+    """The weekly text; `backup=False` for the bot's /report (U7: an on-demand report must not resend the DB)."""
     text = rep.weekly_text(conn, cfg.get("analytics.report_days", 7))
     if bot is None:
         from src.review.runner import make_bot
@@ -43,7 +44,8 @@ def send_weekly(cfg: Config, conn: sqlite3.Connection, bot=None) -> str:
     else:
         chat = cfg.secret("TELEGRAM_CHAT_ID")
     bot.send_message(chat, text, disable_web_page_preview=True)
-    _backup(cfg, bot, chat)
+    if backup:
+        _backup(cfg, bot, chat)
     return text
 
 

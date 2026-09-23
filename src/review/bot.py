@@ -6,14 +6,17 @@ Every state lives in the DB (videos.status, approvals, control flags), so the bo
 at any time.
 
   ✅ Approve / ❌ Reject  → approvals row; video approved / rejected
-  ✏️ Edit script          → asks for a note; the reply regenerates script → voice → video
+  ✏️ Edit script          → asks for a note (the card keeps its buttons); the reply regenerates
+                            script → voice → video. One open prompt per video, each expiring on its own (U2)
   🔁 New b-roll           → same voice, re-assembled without the previous clips
   🎙 Re-voice             → the brand's alternate voice, re-assembled
-  /pause /resume /status /report
+  🔁 Retry                → on a final publish failure: re-approve and queue the failed platforms again (U9)
+  /queue /status /approve_all /skip /pause /resume /report /help
 A regenerated video is a new row (parent_id = old) sent for review; the old one is 'superseded'.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -51,6 +54,20 @@ class Deps:
     render_run: Callable = render.run_cmd
     preview_run: RunCmd = run_cmd
     extra: dict = field(default_factory=dict)
+
+
+def ensure_commands(conn: sqlite3.Connection, bot: Bot) -> bool:
+    """Register the slash menu once per command-list version (U8); a Telegram failure just retries next time."""
+    digest = hashlib.sha256(json.dumps(cards.COMMANDS).encode()).hexdigest()[:12]
+    if db.get_flag(conn, "commands_version") == digest:
+        return False
+    try:
+        bot.set_commands(cards.COMMANDS)
+    except TelegramError as exc:
+        log.info("setMyCommands failed (will retry): %s", exc)
+        return False
+    db.set_flag(conn, "commands_version", digest)
+    return True
 
 
 class Handler:
@@ -94,27 +111,42 @@ class Handler:
             self._soft(self.bot.answer, cb["id"], "Unknown action")
             return
         act, vid = parsed
+        user = str((cb.get("from") or {}).get("id", ""))
+        msg_id = (cb.get("message") or {}).get("message_id")
+        if act in cards.EXTRA:
+            self._soft(self.bot.answer, cb["id"], "⏳ Working on it…")
+            if act == "rt":
+                self._retry(vid, user, msg_id)
+            elif act == "bx":
+                self._soft(self.bot.edit_markup, self.chat, msg_id, None)
+                self.bot.send_message(self.chat, "↩️ Cancelled — nothing changed.")
+            else:
+                self._soft(self.bot.edit_markup, self.chat, msg_id, None)
+                self._bulk("approved" if act == "ba" else "rejected", vid, user)
+            return
         row = self.conn.execute("SELECT status, review_msg_id FROM videos WHERE id = ?", (vid,)).fetchone()
         if row is None or row["status"] != "in_review":
             self._soft(self.bot.answer, cb["id"], "Already handled")
             return
-        user = str((cb.get("from") or {}).get("id", ""))
         toast = {"ap": "✅ Approved", "rj": "❌ Rejected", "ed": "Send your edit note"}.get(act, "⏳ Working on it…")
         self._soft(self.bot.answer, cb["id"], toast)
-        # Buttons come off first so a double tap can't act twice (the status check above also guards it).
-        self._soft(self.bot.edit_markup, self.chat, row["review_msg_id"], None)
-        if act in ("ap", "rj"):
-            decision = cards.ACTIONS[act]
-            self._approval(vid, decision, user, row["review_msg_id"])
-            self.conn.execute("UPDATE videos SET status = ? WHERE id = ?", (decision, vid))
-            self.conn.commit()
-            self.bot.send_message(self.chat, f"{toast} #{vid}", reply_to_message_id=row["review_msg_id"])
-        elif act == "ed":
-            prompt = self.bot.send_message(self.chat, f"✏️ What should change in #{vid}? Reply with your note.",
+        if act == "ed":
+            # The card keeps its buttons: the owner may still approve or reject while the prompt is open (U2).
+            prompt = self.bot.send_message(self.chat, f"✏️ What should change in #{vid}? Reply to this message "
+                                                      f"with your note.",
                                            reply_markup={"force_reply": True, "selective": True},
                                            reply_to_message_id=row["review_msg_id"])
-            db.set_flag(self.conn, "pending_edit", json.dumps({"video_id": vid, "prompt": prompt["message_id"],
-                                                               "user": user, "at": time.time()}))
+            pending = self._pending()
+            pending[str(vid)] = {"prompt": prompt["message_id"], "user": user, "at": time.time()}
+            self._save_pending(pending)
+            return
+        # Buttons come off first so a double tap can't act twice (the status check above also guards it).
+        self._soft(self.bot.edit_markup, self.chat, row["review_msg_id"], None)
+        self._drop_pending(vid)
+        if act in ("ap", "rj"):
+            self._decide(vid, cards.ACTIONS[act], user, row["review_msg_id"])
+            self.bot.send_message(self.chat, f"{toast} #{vid}\n{self._title(vid)}",
+                                  reply_to_message_id=row["review_msg_id"])
         else:
             self._approval(vid, cards.ACTIONS[act], user, row["review_msg_id"])
             self._regenerate(vid, new_broll=act == "nb", revoice=act == "rv")
@@ -122,48 +154,152 @@ class Handler:
     def on_message(self, msg: dict[str, Any]) -> None:
         text = (msg.get("text") or "").strip()
         if text.startswith("/"):
-            cmd = text.split()[0].split("@")[0].lower()
-            if cmd == "/pause":
-                db.set_flag(self.conn, "publishing_paused", "1")
-                self.bot.send_message(self.chat, "⏸ Publishing paused.")
-            elif cmd == "/resume":
-                db.set_flag(self.conn, "publishing_paused", "0")
-                db.set_flag(self.conn, "paused_notice_sent", "0")
-                self.bot.send_message(self.chat, "▶️ Publishing resumed.")
-            elif cmd in ("/status", "/start"):
-                self.bot.send_message(self.chat, self.status())
-            elif cmd == "/report":
-                from src.analytics.runner import send_weekly
-                self._soft(send_weekly, self.cfg, self.conn, self.bot)
+            self.on_command(text.split()[0].split("@")[0].lower())
             return
-        pending = json.loads(db.get_flag(self.conn, "pending_edit") or "null")
-        if not pending or not text:
+        if not text:
             return
-        vid = pending["video_id"]
-        if time.time() - float(pending.get("at") or 0) > EDIT_NOTE_TTL:
-            db.set_flag(self.conn, "pending_edit", "null")
-            log.info("Edit prompt for #%d expired; ignoring text", vid)
-            self.bot.send_message(self.chat, f"⌛ The ✏️ prompt for #{vid} expired — tap ✏️ Edit script again.")
-            return
-        # Only the reply to the ForceReply prompt is the note (S4): a stray text sent while a prompt is open must
-        # not rewrite the video. The owner gets a nudge instead.
-        if (msg.get("reply_to_message") or {}).get("message_id") != pending["prompt"]:
-            self.bot.send_message(self.chat, f"↩️ To edit #{vid}, reply to the ✏️ prompt (or tap ✏️ again).",
-                                  reply_to_message_id=pending["prompt"])
-            return
+        self._on_note(msg, text)
+
+    def on_command(self, cmd: str) -> None:
+        if cmd == "/pause":
+            db.set_flag(self.conn, "publishing_paused", "1")
+            self.bot.send_message(self.chat, "⏸ Publishing paused. /resume to continue.")
+        elif cmd == "/resume":
+            db.set_flag(self.conn, "publishing_paused", "0")
+            db.set_flag(self.conn, "paused_notice_sent", "0")
+            self.bot.send_message(self.chat, "▶️ Publishing resumed.")
+        elif cmd == "/status":
+            self.bot.send_message(self.chat, self.status())
+        elif cmd == "/queue":
+            self.bot.send_message(self.chat, self.queue(), disable_web_page_preview=True)
+        elif cmd in ("/help", "/start"):
+            self.bot.send_message(self.chat, cards.HELP)
+        elif cmd in ("/approve_all", "/skip"):
+            self._ask_bulk("ba" if cmd == "/approve_all" else "bs")
+        elif cmd == "/report":
+            from src.analytics.runner import send_weekly
+            self._soft(send_weekly, self.cfg, self.conn, self.bot, False)     # no backup on demand (U7)
+        else:
+            self.bot.send_message(self.chat, f"Unknown command {cmd}. /help lists what I understand.")
+
+    def status(self) -> str:
+        return cards.status_text(self.conn, db.publishing_paused(self.conn))
+
+    def queue(self) -> str:
+        from src.publish.runner import PLATFORMS
+        missing = {name: check(self.cfg) for name, (check, _) in PLATFORMS.items()}
+        return cards.queue_text(self.conn, self.cfg, missing)
+
+    # -- edit prompts (one per video, each with its own expiry — U2) ----------------------
+    def _pending(self) -> dict[str, dict[str, Any]]:
+        raw = json.loads(db.get_flag(self.conn, "pending_edits") or "{}") or {}
+        legacy = json.loads(db.get_flag(self.conn, "pending_edit") or "null")      # single-prompt flag (pre-11)
+        if legacy and str(legacy.get("video_id")) not in raw:
+            raw[str(legacy["video_id"])] = {k: legacy[k] for k in ("prompt", "user", "at") if k in legacy}
+        return raw
+
+    def _save_pending(self, pending: dict[str, dict[str, Any]]) -> None:
+        db.set_flag(self.conn, "pending_edits", json.dumps(pending))
         db.set_flag(self.conn, "pending_edit", "null")
-        self._approval(vid, "edit", str((msg.get("from") or {}).get("id", "")), None, note=text)
+
+    def _drop_pending(self, vid: int) -> None:
+        pending = self._pending()
+        if pending.pop(str(vid), None) is not None:
+            self._save_pending(pending)
+
+    def _on_note(self, msg: dict[str, Any], text: str) -> None:
+        pending = self._pending()
+        if not pending:
+            return
+        now = time.time()
+        expired = [k for k, p in pending.items() if now - float(p.get("at") or 0) > EDIT_NOTE_TTL]
+        for k in expired:
+            pending.pop(k)
+            log.info("Edit prompt for #%s expired", k)
+        if expired:
+            self._save_pending(pending)
+        reply_to = (msg.get("reply_to_message") or {}).get("message_id")
+        hit = next((k for k, p in pending.items() if p.get("prompt") == reply_to), None)
+        if hit is None:
+            # Only the reply to a ForceReply prompt is a note (S4): a stray text must not rewrite a video.
+            if expired and not pending:
+                self.bot.send_message(self.chat, "⌛ The ✏️ prompt for #" + ", #".join(expired)
+                                      + " expired — tap ✏️ Edit script again.")
+            elif pending:
+                self.bot.send_message(self.chat, "↩️ To edit #" + ", #".join(pending)
+                                      + ", reply to its ✏️ prompt (or tap ✏️ again).")
+            return
+        vid = int(hit)
+        pending.pop(hit)
+        self._save_pending(pending)
+        row = self.conn.execute("SELECT status, review_msg_id FROM videos WHERE id = ?", (vid,)).fetchone()
+        if row is None or row["status"] != "in_review":
+            self.bot.send_message(self.chat, f"#{vid} is no longer in review ({row['status'] if row else 'gone'}) "
+                                             f"— note ignored.")
+            return
+        self._soft(self.bot.edit_markup, self.chat, row["review_msg_id"], None)
+        self._approval(vid, "edit", str((msg.get("from") or {}).get("id", "")), row["review_msg_id"], note=text)
         self.bot.send_message(self.chat, f"⏳ Rewriting #{vid} with your note…")
         self._regenerate(vid, edit_note=text)
 
-    def status(self) -> str:
-        counts = dict(self.conn.execute("SELECT status, count(*) FROM videos GROUP BY status").fetchall())
-        paused = db.publishing_paused(self.conn)
-        lines = ["📊 Ra'ij status", f"Publishing: {'⏸ paused' if paused else '▶️ on'}"]
-        lines += [f"{k}: {v}" for k, v in sorted(counts.items())]
-        return "\n".join(lines)
+    # -- bulk (U: /approve_all, /skip — always behind a confirm button) -------------------
+    def _ask_bulk(self, act: str) -> None:
+        review = cards.in_review(self.conn)
+        if not review:
+            self.bot.send_message(self.chat, "📭 Nothing in review.")
+            return
+        verb = "Approve" if act == "ba" else "Reject"
+        lines = [f"{verb} all {len(review)} card{'s' if len(review) != 1 else ''} in review?"]
+        for v in review:
+            lines += [f"#{v['id']}", cards.title_of(v)]
+        self.bot.send_message(self.chat, "\n".join(lines), reply_markup=cards.confirm_keyboard(act, review[-1]["id"]))
+
+    def _bulk(self, decision: str, upto: int, user: str) -> None:
+        review = [v for v in cards.in_review(self.conn) if v["id"] <= upto]
+        if not review:
+            self.bot.send_message(self.chat, "📭 Nothing left in review — no change.")
+            return
+        for v in review:
+            msg_id = self.conn.execute("SELECT review_msg_id FROM videos WHERE id = ?", (v["id"],)).fetchone()[0]
+            self._soft(self.bot.edit_markup, self.chat, msg_id, None)
+            self._drop_pending(v["id"])
+            self._decide(v["id"], decision, user, msg_id)
+        mark = "✅ Approved" if decision == "approved" else "❌ Rejected"
+        self.bot.send_message(self.chat, f"{mark} {len(review)} card{'s' if len(review) != 1 else ''}: "
+                                         + ", ".join(f"#{v['id']}" for v in review))
+
+    # -- retry a final publish failure (U9) ----------------------------------------------
+    def _retry(self, vid: int, user: str, msg_id: int | None) -> None:
+        row = self.conn.execute("SELECT status FROM videos WHERE id = ?", (vid,)).fetchone()
+        if row is None or row["status"] != "approved":
+            self.bot.send_message(self.chat, f"#{vid} is {row['status'] if row else 'gone'} — nothing to retry.")
+            return
+        failed = [r["platform"] for r in self.conn.execute(
+            "SELECT platform FROM posts WHERE video_id = ? AND status = 'failed' ORDER BY id", (vid,))]
+        if not failed:
+            self.bot.send_message(self.chat, f"#{vid} has no failed platform — nothing to retry.")
+            return
+        self._soft(self.bot.edit_markup, self.chat, msg_id, None)
+        # A fresh approval row renews the publish window (max_age_hours) — the owner just asked for it.
+        self._approval(vid, "approved", user, msg_id, note="retry")
+        self.conn.execute("UPDATE posts SET attempts = 0, status = 'queued', error = NULL, last_attempt_at = NULL "
+                          "WHERE video_id = ? AND status = 'failed'", (vid,))
+        self.conn.commit()
+        names = ", ".join(cards.PLATFORM.get(p, p) for p in failed)
+        self.bot.send_message(self.chat, f"🔁 #{vid} queued again for {names} — next pass tries it.")
 
     # -- effects -------------------------------------------------------------------
+    def _title(self, vid: int) -> str:
+        try:
+            return cards.title_of(cards.context(self.conn, vid))
+        except KeyError:
+            return ""
+
+    def _decide(self, vid: int, decision: str, user: str, msg_id: int | None) -> None:
+        self._approval(vid, decision, user, msg_id)
+        self.conn.execute("UPDATE videos SET status = ? WHERE id = ?", (decision, vid))
+        self.conn.commit()
+
     def _approval(self, vid: int, decision: str, user: str, msg_id: int | None, note: str | None = None) -> None:
         self.conn.execute("INSERT INTO approvals (video_id, decision, note, decided_by, telegram_msg_id) "
                           "VALUES (?, ?, ?, ?, ?)", (vid, decision, note, user, msg_id))

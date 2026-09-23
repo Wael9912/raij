@@ -154,8 +154,8 @@ def cmd_tick(cfg, conn, args) -> int:
     run when due, handle queued Telegram taps, publish approvals. Touches data/.changed when the state changed,
     so the caller knows whether to save it."""
     from src.publish.runner import publish
-    from src.review.bot import poll
-    from src.review.runner import make_bot
+    from src.review.bot import ensure_commands, poll
+    from src.review.runner import make_bot, remind
     before = conn.total_changes
     code = 0
     try:
@@ -168,8 +168,10 @@ def cmd_tick(cfg, conn, args) -> int:
         if not args.dry_run:
             try:
                 bot, chat = make_bot(cfg)
+                ensure_commands(conn, bot)                     # slash menu, once per version (U8)
                 while poll(cfg, conn, bot, chat, once=True):  # drain every queued tap
                     pass
+                remind(cfg, conn, bot, chat)                   # 48 h / 72 h nudges for waiting cards (U5)
             except Exception as exc:
                 log.error("Telegram pass failed: %s", exc)
                 code = 1
@@ -247,10 +249,19 @@ def cmd_run_daily(cfg, conn, args) -> int:
         try:
             from src.review.runner import make_bot
             bot, chat = make_bot(cfg)
-            bot.send_message(chat, f"⚠️ Daily run: {', '.join(failures)} had problems — see data/logs/daily.log")
+            bot.send_message(chat, f"⚠️ Daily run: {', '.join(failures)} had problems — {log_hint()}")
         except Exception as exc:
             log.warning("Couldn't send the failure notice: %s", exc)
     return 1 if failures else 0
+
+
+def log_hint() -> str:
+    """Where the owner can read the log for this run (U6): the Actions run when there is one, else the local file."""
+    import os
+    run, repo, server = os.getenv("GITHUB_RUN_ID"), os.getenv("GITHUB_REPOSITORY"), os.getenv("GITHUB_SERVER_URL")
+    if run and repo:
+        return f"log: {server or 'https://github.com'}/{repo}/actions/runs/{run}"
+    return "see data/logs/daily.log"
 
 
 def cmd_pause(cfg, conn, args) -> int:
