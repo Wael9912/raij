@@ -20,6 +20,11 @@ on:
         description: "Ra'ij command to run on the live state (default: tick). E.g. finalize, publish --dry-run"
         default: tick
         required: false
+      export_state:
+        description: "Also refresh the state-bootstrap release now (to move the state to another machine)"
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: write        # keep-alive commit (GitHub pauses schedules after 60 idle days), bootstrap release
@@ -111,7 +116,7 @@ jobs:
         run: |
           # A tick that failed or was killed may have changed the DB without touching data/.changed:
           # save anyway, or the next tick replays the day (daily pipeline, cards, quota).
-          if [ -f data/.changed ] || [ "${{ steps.tick.outcome }}" != "success" ]; then
+          if [ -f data/.changed ] || [ "${{ steps.tick.outcome }}" != "success" ] || [ "${{ inputs.export_state }}" = "true" ]; then
             uv run python -m src.main state pack state.enc
             echo "save=true" >> "$GITHUB_OUTPUT"
           else
@@ -146,7 +151,7 @@ jobs:
           fi
           updated=$(gh release view state-bootstrap --json assets --jq '.assets[] | select(.name == "state.enc") | .updatedAt' || true)
           age=$(( $(date +%s) - $(date -d "${updated:-1970-01-01T00:00:00Z}" +%s) ))
-          if [ "$age" -gt $(( 7 * 86400 )) ]; then
+          if [ "$age" -gt $(( 7 * 86400 )) ] || [ "${{ inputs.export_state }}" = "true" ]; then
             gh release upload state-bootstrap state.enc --clobber && echo "Bootstrap release refreshed"
           else
             echo "Bootstrap release is $(( age / 3600 )) h old — fine"
