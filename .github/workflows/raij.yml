@@ -85,7 +85,9 @@ jobs:
         timeout-minutes: 150          # leaves the job time to pack + save even when the pipeline hangs
         env:
           RAIJ_COMMAND: ${{ inputs.command || 'tick' }}
-        run: uv run python -m src.main $RAIJ_COMMAND
+        run: |
+          # shellcheck disable=SC2086  # the command may carry flags ("publish --dry-run"): word-split on purpose
+          uv run python -m src.main $RAIJ_COMMAND
 
       - name: Pack state
         id: pack
@@ -129,6 +131,8 @@ jobs:
           else
             echo "Bootstrap release is $(( age / 3600 )) h old — fine"
           fi
+
+      - name: Keep-alive commit (every ~45 days)
         if: always()
         run: |
           last=$(git log -1 --format=%ct)
