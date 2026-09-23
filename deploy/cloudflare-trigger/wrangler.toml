@@ -10,7 +10,7 @@ main = "worker.js"
 compatibility_date = "2026-09-01"
 
 [triggers]
-crons = ["*/10 * * * *"]
+crons = []   # paused 2026-09-23: pipeline moved back to the Mac; restore "*/10 * * * *" to re-enable
 
 [vars]
 GH_REPO = "Wael9912/raij"
