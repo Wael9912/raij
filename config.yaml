@@ -81,6 +81,7 @@ script:
   min_words: 85
   max_words: 115
   similarity_threshold: 0.35       # above this vs source transcript → rewrite once, else reject
+  max_shared_run: 8                # this many consecutive non-number words copied from the source → same (A5)
 
 voice:
   target_lufs: -14
@@ -99,8 +100,13 @@ video:
   stock_keep_days: 14              # cached stock clips unused this long are deleted after a render
   faceless: true                   # skip stock clips whose previews show a face (public figures get a licensed photo)
 
+pipeline:
+  max_age_days: 2                  # a pick still not reviewed after this is expired (stale trend, saves quota)
+  max_attempts: 3                  # retryable failures per item (extract, script, voice, assemble) before it fails
+
 publish:
   max_attempts: 3                  # per (video, platform), across runs; then a Telegram alert
+  retry_after_hours: [1, 6, 24]    # backoff from the last failed attempt (A8); ticks in between skip it
   every_minutes: 30                # launchd publish job interval (install-services)
   max_age_hours: 72                # approvals older than this aren't published (trends go stale)
   youtube_privacy: public          # public | unlisted | private

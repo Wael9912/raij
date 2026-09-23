@@ -3,7 +3,8 @@
 Source text is stored in stories.transcript for Phase 4's similarity gate. No media persists:
 YouTube audio (whisper fallback) lives only in a temp dir. Candidates move selected → extracted,
 or → extract_failed when the source has no usable story. An LLM outage leaves them 'selected'
-so the next run retries.
+so the next run retries — up to pipeline.max_attempts times and only while they're younger than
+pipeline.max_age_days (A6); newest picks go first so a backlog never eats the day's quota.
 """
 from __future__ import annotations
 
@@ -38,9 +39,21 @@ def _pending(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT c.* FROM candidates c WHERE c.status = 'selected' "
         "AND NOT EXISTS (SELECT 1 FROM stories s WHERE s.candidate_id = c.id) "
-        "ORDER BY c.selected_at, c.score DESC"
+        "ORDER BY c.selected_at DESC, c.score DESC"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _retry_later(conn: sqlite3.Connection, row: dict[str, Any], max_attempts: int) -> bool:
+    """Count a retryable failure; False (and status extract_failed) once the cap is reached."""
+    attempts = int(row.get("attempts") or 0) + 1
+    if attempts >= max_attempts:
+        conn.execute("UPDATE candidates SET attempts = ?, status = 'extract_failed' WHERE id = ?",
+                     (attempts, row["id"]))
+    else:
+        conn.execute("UPDATE candidates SET attempts = ? WHERE id = ?", (attempts, row["id"]))
+    conn.commit()
+    return attempts < max_attempts
 
 
 def _found_via(row: dict[str, Any]) -> str:
@@ -86,6 +99,9 @@ def distill(cfg: Config, row: dict[str, Any], src: SourceText, client: httpx.Cli
 
 def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,
             run: RunCmd = run_cmd, out_dir: Path | None = None) -> int:
+    if not dry_run:
+        db.expire_stale(conn, cfg.get("pipeline.max_age_days", 2))
+    max_attempts = int(cfg.get("pipeline.max_attempts", 3))
     pending = _pending(conn)
     if dry_run:
         log.info("[dry run] %d selected candidate(s) awaiting extraction; LLM: %s",
@@ -114,12 +130,20 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
                 failed.append({"id": row["id"], "error": str(exc)})
                 continue
             except (llm.LLMError, CardError) as exc:
-                log.error("#%d: story card failed, will retry next run: %s", row["id"], exc)
-                retry.append({"id": row["id"], "error": str(exc)})
+                if _retry_later(conn, row, max_attempts):
+                    log.error("#%d: story card failed, will retry next run: %s", row["id"], exc)
+                    retry.append({"id": row["id"], "error": str(exc)})
+                else:
+                    log.warning("#%d: story card failed %d times — giving up: %s", row["id"], max_attempts, exc)
+                    failed.append({"id": row["id"], "error": f"after {max_attempts} attempts: {exc}"})
                 continue
             except Exception as exc:                        # one bad item never kills the stage
                 log.exception("#%d: unexpected extract error", row["id"])
-                retry.append({"id": row["id"], "error": f"{type(exc).__name__}: {exc}"})
+                msg = f"{type(exc).__name__}: {exc}"
+                if _retry_later(conn, row, max_attempts):
+                    retry.append({"id": row["id"], "error": msg})
+                else:
+                    failed.append({"id": row["id"], "error": f"after {max_attempts} attempts: {msg}"})
                 continue
             max_t = cfg.get("extract.max_transcript_chars", 20000)
             story_id = conn.execute(

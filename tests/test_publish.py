@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -238,6 +238,7 @@ def test_partial_failure_retries_then_alerts_once(env):
     plats = _platforms(youtube=yt, facebook=fb)
     assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=bot) == 0     # partial
     for _ in range(4):
+        _rewind(conn, 24)                                            # past every backoff step (A8)
         runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=bot)
     post = dict(conn.execute("SELECT * FROM posts WHERE platform = 'facebook'").fetchone())
     assert post["status"] == "failed" and post["attempts"] == 3 and "boom" in post["error"]
@@ -252,6 +253,7 @@ def test_failure_then_success_on_retry(env):
     _brand_platforms(cfg, ["youtube"])
     yt = Fake(fail=1)
     assert runner.publish(cfg, conn, platforms=_platforms(youtube=yt), client=httpx.Client()) == 1
+    _rewind(conn, 1)                                                  # first backoff step (A8)
     assert runner.publish(cfg, conn, platforms=_platforms(youtube=yt), client=httpx.Client()) == 0
     post = dict(conn.execute("SELECT * FROM posts").fetchone())
     assert post["status"] == "published" and post["attempts"] == 2 and post["error"] is None
@@ -519,3 +521,70 @@ def test_meta_errors_never_leak_the_token(env, monkeypatch):
 def parse(req):
     from urllib.parse import parse_qs
     return {k: v[0] for k, v in parse_qs(req.content.decode()).items()}
+
+
+# --- Phase 10b (A8, A12) -----------------------------------------------------
+
+def test_retry_due_follows_the_backoff_schedule():
+    now = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
+    stamp = lambda h: (now - timedelta(hours=h)).strftime("%Y-%m-%d %H:%M:%S")     # noqa: E731
+    assert runner.retry_due({"attempts": 0, "last_attempt_at": None}, [1, 6, 24], now)
+    assert not runner.retry_due({"attempts": 1, "last_attempt_at": stamp(0.5)}, [1, 6, 24], now)
+    assert runner.retry_due({"attempts": 1, "last_attempt_at": stamp(1)}, [1, 6, 24], now)
+    assert not runner.retry_due({"attempts": 2, "last_attempt_at": stamp(5)}, [1, 6, 24], now)
+    assert runner.retry_due({"attempts": 2, "last_attempt_at": stamp(6)}, [1, 6, 24], now)
+    assert not runner.retry_due({"attempts": 5, "last_attempt_at": stamp(23)}, [1, 6, 24], now)   # last repeats
+    assert runner.retry_due({"attempts": 1, "last_attempt_at": stamp(0)}, [], now)
+
+
+def _rewind(conn, hours):
+    conn.execute("UPDATE posts SET last_attempt_at = datetime(last_attempt_at, ?)", (f"-{hours} hours",))
+    conn.commit()
+
+
+def test_failed_post_waits_for_its_backoff(env):
+    cfg, conn, _ = env
+    _video(cfg, conn)
+    _brand_platforms(cfg, ["youtube"])
+    yt = Fake(fail=2)
+    plats = _platforms(youtube=yt)
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client()) == 1
+    for _ in range(3):                                            # ticks 10 minutes apart: no retry yet
+        assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client()) == 0
+    assert len(yt.calls) == 1 and conn.execute("SELECT count(*) FROM runs").fetchone()[0] == 1
+    _rewind(conn, 1)                                              # an hour later: second attempt
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client()) == 1
+    assert len(yt.calls) == 2
+    runner.publish(cfg, conn, platforms=plats, client=httpx.Client())
+    assert len(yt.calls) == 2                                     # 6 h backoff now
+    _rewind(conn, 6)
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client()) == 0
+    post = dict(conn.execute("SELECT * FROM posts").fetchone())
+    assert post["status"] == "published" and post["attempts"] == 3 and len(yt.calls) == 3
+
+
+def test_youtube_upload_stalled_by_308s_gives_up(env, monkeypatch):
+    cfg, conn, tmp = env
+    _yt_setup(tmp)
+    _video(cfg, conn)
+    monkeypatch.setattr(youtube, "CHUNK", 400)
+    puts = []
+
+    def handler(req):
+        if req.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "at"})
+        if req.method == "GET":
+            return httpx.Response(200, json={"items": []})
+        if req.method == "POST":
+            return httpx.Response(200, headers={"Location": "https://upload.example/s"})
+        puts.append(req.headers["content-range"])
+        return httpx.Response(308)                                # never reports progress (A12)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(PublishError, match="stalled at byte 0"):
+        youtube.publish(cfg, client, tmp / "assets/generated/video/1.mp4", post_text(runner.eligible(conn)[0]), 1)
+    assert len(puts) == youtube.MAX_STALLS + 1
+
+    (tmp / "assets/generated/video/1.mp4").write_bytes(b"")
+    with pytest.raises(PublishError, match="empty"):
+        youtube.publish(cfg, client, tmp / "assets/generated/video/1.mp4", post_text(runner.eligible(conn)[0]), 1)

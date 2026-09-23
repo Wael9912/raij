@@ -279,3 +279,60 @@ def test_backfill_titles_for_old_scripts(env, monkeypatch):
     down = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
     conn.execute("UPDATE scripts SET notes = '{}' WHERE id = 1")
     assert titles.backfill(cfg, conn, client=down) == 0                # outage: nothing written, no crash
+
+
+# --- Phase 10b gates (A4, A5, A14) -------------------------------------------
+
+def test_rounding_up_is_refused():
+    card = {"hook": "Numbers", "key_facts": json.dumps(["1,500,001 viewers", "12,000 signups", "953,531 euros"]),
+            "claims": "[]", "why_trending": ""}
+    assert facts.unsupported("نحو 1.5 مليون مشاهد و12 ألف مشترك و950 ألف يورو و954 ألف يورو", card) == []
+    assert facts.unsupported("2 مليون مشاهد", card) == ["2e+06"]           # 1,500,001 rounded UP a whole million
+    assert facts.unsupported("20 ألف مشترك", card) == ["20000"]             # 12,000 → 20,000 is inflation, not rounding
+    assert facts.unsupported("995 ألف يورو", card) == ["995000"]
+
+
+_LIFTED = "أبدى رئيس الاتحاد الدولي لكرة القدم جياني إنفانتينو استعداده لإجراء إصلاحات داخل الهيئة"   # 13 words
+
+
+def _distinct_words(n):
+    letters = "بتثجحخدذرزسشصضطظعغفقكلمنهوي"
+    return [f"كلمة{a}{b}" for a in letters for b in letters][:n]
+
+
+def test_longest_shared_run_finds_a_lifted_sentence():
+    body = " ".join(_distinct_words(40) + _LIFTED.split() + _distinct_words(80)[40:])
+    assert similarity.containment(body, SOURCE_AR) < 0.35                  # trigram score misses it
+    run, text = similarity.longest_run(body, SOURCE_AR)
+    assert run == 13 and text.startswith("ابدي رييس")                        # normalized words
+    assert similarity.longest_run("", SOURCE_AR) == (0, "")
+    # Numbers extend a run without counting: a date + age is a fact, not copied prose (real script #27).
+    fact = "توفي في 28 ديسمبر 2025 عن عمر ناهز 91 عاما"
+    assert similarity.longest_run(fact, "الذي توفي في 28 ديسمبر 2025 عن عمر ناهز 91 عاما في منزله") == (7, "توفي في 28 ديسمبر 2025 عن عمر ناهز 91 عاما")
+
+
+def test_lifted_sentence_is_rewritten_even_with_low_similarity(env, monkeypatch):
+    cfg, conn, tmp = env
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    _story(conn)
+    lifted = " ".join(_distinct_words(40) + _LIFTED.split() + _distinct_words(80)[40:])
+    clean = " ".join(_distinct_words(93))
+    prompts = []
+    client = _llm([_draft([ "هل سمعت الخبر", lifted, "والنتيجة مفاجئة", "اكتب رأيك"]),
+                   _draft(["هل سمعت الخبر", clean, "والنتيجة مفاجئة", "اكتب رأيك"])], prompts)
+    story = dict(conn.execute("SELECT s.*, c.title FROM stories s JOIN candidates c ON c.id = s.candidate_id").fetchone())
+    out = write.write_script(cfg, story, cfg.brands[0], client=client)
+    first, final = out.versions
+    assert first["status"] == "superseded" and "13 consecutive words" in first["notes"]["reason"]
+    assert first["notes"]["shared_run"] == 13 and first["similarity"] < 0.35
+    assert "ابدي رييس" in prompts[1]                                           # the rewrite names the lifted run
+    assert final["status"] == "passed" and final["notes"]["shared_run"] < 8
+
+
+def test_hook_title_needs_a_letter_and_must_not_repeat_the_hook():
+    assert write.clean_title("؟؟") is None                                   # punctuation only (A14)
+    assert write.clean_title("؟؟ 2025") is None
+    assert write.clean_title("هل سمعت الخبر؟", hook="هل سمعت الخبر") is None    # same as the spoken hook
+    assert write.clean_title("نهاية عصر إنفانتينو", hook="هل سمعت الخبر") == "نهاية عصر إنفانتينو"
+    d = write.validate({**_draft(), "hook_title": "هل سمعت الخبر"}, 85, 115)
+    assert d.hook_title is None

@@ -4,7 +4,8 @@ Output (only under assets/generated/voice/, the assembler's allowed input):
   <script_id>.wav         48 kHz mono, loudness-normalized to voice.target_lufs
   <script_id>.words.json  word timings + beat spans, for subtitles and b-roll cuts (Phase 6)
 A videos row records it as 'voiced'. Over voice.max_seconds → re-synthesized once at a faster
-rate; still over → 'failed'. A network failure writes nothing, so the next run retries.
+rate; still over → 'failed'. A network failure writes only scripts.notes.attempts, so the next run
+retries — until pipeline.max_attempts, when a 'failed' video row closes the script (A6).
 """
 from __future__ import annotations
 
@@ -84,6 +85,12 @@ def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path, synth=tts.s
     return {"voice_path": str(wav.relative_to(cfg.root)), "duration_s": seconds, "notes": notes}
 
 
+def _fail(conn: sqlite3.Connection, script_id: int, reason: str) -> None:
+    conn.execute("INSERT INTO videos (script_id, status, notes) VALUES (?, 'failed', ?)",
+                 (script_id, json.dumps({"reason": reason}, ensure_ascii=False)))
+    conn.commit()
+
+
 def voice(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, synth=tts.synthesize,
           run: RunCmd = tts.run_cmd) -> int:
     pending = _pending(conn)
@@ -96,6 +103,9 @@ def voice(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, synth=tt
         return 0
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    db.expire_stale(conn, cfg.get("pipeline.max_age_days", 2))
+    max_attempts = int(cfg.get("pipeline.max_attempts", 3))
+    pending = _pending(conn)
     run_id = db.start_run(conn, "voice")
     voiced, failed, retry = [], [], []
     for s in pending:
@@ -103,14 +113,22 @@ def voice(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, synth=tt
             row = voice_script(cfg, s, out_dir, synth=synth, run=run)
         except TooLong as exc:
             log.warning("Script %d: too long — %s", s["id"], exc)
-            conn.execute("INSERT INTO videos (script_id, status, notes) VALUES (?, 'failed', ?)",
-                         (s["id"], json.dumps({"reason": str(exc)}, ensure_ascii=False)))
-            conn.commit()
+            _fail(conn, s["id"], str(exc))
             failed.append({"script_id": s["id"], "error": str(exc)})
             continue
-        except Exception as exc:                        # network/ffmpeg: retry next run
-            log.error("Script %d: voice failed, will retry next run: %s", s["id"], exc)
-            retry.append({"script_id": s["id"], "error": f"{type(exc).__name__}: {exc}"})
+        except Exception as exc:                        # network/ffmpeg: retry next run, up to the cap
+            msg = f"{type(exc).__name__}: {exc}"
+            notes = json.loads(s.get("notes") or "{}")
+            notes["attempts"] = int(notes.get("attempts") or 0) + 1
+            conn.execute("UPDATE scripts SET notes = ? WHERE id = ?", (json.dumps(notes, ensure_ascii=False), s["id"]))
+            conn.commit()
+            if notes["attempts"] >= max_attempts:
+                log.warning("Script %d: voice failed %d times — giving up: %s", s["id"], max_attempts, msg)
+                _fail(conn, s["id"], f"after {max_attempts} attempts: {msg}")
+                failed.append({"script_id": s["id"], "error": msg})
+            else:
+                log.error("Script %d: voice failed, will retry next run: %s", s["id"], msg)
+                retry.append({"script_id": s["id"], "error": msg})
             continue
         conn.execute("INSERT INTO videos (script_id, voice_path, duration_s, status, notes) "
                      "VALUES (?, ?, ?, 'voiced', ?)",

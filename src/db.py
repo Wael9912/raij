@@ -35,9 +35,10 @@ CREATE TABLE IF NOT EXISTS candidates (
     category      TEXT,
     retellable    INTEGER,                          -- NULL=unchecked, 0/1
     rank_reason   TEXT,
-    selected_at   TEXT,                             -- UTC; when rank picked it for the day
+    selected_at   TEXT,                             -- schedule.timezone local time; when rank picked it for the day
     topic         TEXT,                             -- LLM story slug; one pick per topic
-    status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged|extracted|extract_failed|scripted|script_rejected
+    attempts      INTEGER NOT NULL DEFAULT 0,       -- retryable extract/script failures so far (A6)
+    status        TEXT NOT NULL DEFAULT 'new',      -- new|ranked|selected|rejected|flagged|extracted|extract_failed|scripted|script_rejected|expired
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (source, external_id)
@@ -67,9 +68,9 @@ CREATE TABLE IF NOT EXISTS scripts (
     description_en  TEXT,
     hashtags        TEXT,
     similarity      REAL,
-    status          TEXT NOT NULL DEFAULT 'draft',  -- draft|passed|rejected|superseded
+    status          TEXT NOT NULL DEFAULT 'draft',  -- draft|passed|rejected|superseded|expired
     edit_note       TEXT,
-    notes           TEXT,                           -- JSON: words, gate result, reject reason, shared phrases
+    notes           TEXT,                           -- JSON: words, gate result, reject reason, shared phrases, attempts
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS posts (
     status          TEXT NOT NULL DEFAULT 'queued', -- queued|published|failed|exported
     error           TEXT,
     attempts        INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,                           -- UTC; retries back off from here (A8)
     published_at    TEXT,
     UNIQUE (video_id, platform)
 );
@@ -161,6 +163,8 @@ MIGRATIONS = [
     ("videos", "notes", "TEXT"),
     ("videos", "parent_id", "INTEGER"),
     ("videos", "review_msg_id", "INTEGER"),
+    ("candidates", "attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("posts", "last_attempt_at", "TEXT"),
 ]
 
 
@@ -191,6 +195,25 @@ def set_flag(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 def publishing_paused(conn: sqlite3.Connection) -> bool:
     return get_flag(conn, "publishing_paused", "0") == "1"
+
+
+def expire_stale(conn: sqlite3.Connection, max_age_days: float) -> dict[str, int]:
+    """Retire work that has waited longer than `max_age_days` at any stage before review (A6): a trend that
+    old is no longer worth the 20 Gemini calls, a voice or render retry, or the stock re-download — and
+    after an outage the fresh picks should get the quota, not the backlog. Candidates still selected/extracted
+    → 'expired'; passed scripts never voiced → 'expired'; voiced videos never rendered → 'failed'."""
+    cutoff = (f"-{float(max_age_days) * 24:.0f} hours",)
+    with conn:
+        cands = conn.execute(
+            "UPDATE candidates SET status = 'expired' WHERE status IN ('selected', 'extracted') "
+            "AND selected_at < datetime('now', ?)", cutoff).rowcount
+        scripts = conn.execute(
+            "UPDATE scripts SET status = 'expired' WHERE status = 'passed' AND created_at < datetime('now', ?) "
+            "AND NOT EXISTS (SELECT 1 FROM videos v WHERE v.script_id = scripts.id)", cutoff).rowcount
+        videos = conn.execute(
+            "UPDATE videos SET status = 'failed', notes = json_set(coalesce(notes, '{}'), '$.reason', 'expired') "
+            "WHERE status = 'voiced' AND created_at < datetime('now', ?)", cutoff).rowcount
+    return {"candidates": cands, "scripts": scripts, "videos": videos}
 
 
 def start_run(conn: sqlite3.Connection, command: str) -> int:

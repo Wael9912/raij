@@ -57,7 +57,7 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   Recency halves every 24h.
 - Retellability + category + `topic` slug in one batched LLM call; one daily pick per topic
   (same story from two outlets isn't picked twice); max 2 per category; `political` → `flagged`.
-- Daily selection is idempotent per UTC day (`candidates.selected_at`); report in `data/rank/<date>.json`.
+- Daily selection is idempotent per **local (schedule.timezone) day** (`candidates.selected_at` is local time since 10b/A16, the same clock as `daily_due`); report in `data/rank/<date>.json`.
 - `GEMINI_MODEL=gemini-flash-latest` (gemini-2.5-flash is closed to new keys). Cloud LLMs retry 4× with backoff.
 - Gemini free quotas are **per model**, and gemini-flash-latest (→ 3.8-flash) allows only 20 req/day. `_gemini`
   falls through `llm.gemini_fallback_models` (flash-lite, gemma-4-31b-it) on 429/503; daily-cap 429s aren't retried.
@@ -158,6 +158,24 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   runs `render.guard()`. Rank/extract no longer print reports/cards (public Actions log) — data files only.
   YouTube token file is created 0600 from the first byte. `db.start_run/finish_run` replace the per-runner `runs`
   SQL. SETUP: chat id via curl, `RAIJ_ENV` = `.env` minus the state key.
+- **Phase 10b (2026-09-23, audit A4–A8, A11–A16):** Numbers: a script figure must be the card's figure rounded to
+  nearest at its own precision (≤ half its last place) **and** within 20 % of it (`facts.supported`) — "2 مليون" for
+  1,500,001 and "20 ألف" for 12,000 now fail. Copy gate: besides trigram containment, `similarity.longest_run` ≥
+  `script.max_shared_run` (8 consecutive non-number words; numbers extend a run but don't count — real script #27
+  shares "في 28 ديسمبر 2025 عن عمر ناهز 91 عاما" with its source and must) → rewrite/reject, run text goes in the
+  rewrite note and `notes.shared_run`. **Caps** (`pipeline.max_age_days` 2, `pipeline.max_attempts` 3):
+  `db.expire_stale()` runs at the start of extract/script/voice/assemble — selected/extracted candidates older than
+  2 days → `expired`, passed scripts never voiced → `expired`, voiced videos never rendered → `failed`; retryable
+  failures count in `candidates.attempts` (extract → `extract_failed`, script → `script_rejected`),
+  `scripts.notes.attempts` (voice → a `failed` videos row) and `videos.notes.attempts` (assemble → `failed`); extract
+  and script now process the newest picks first. Stock: every search erroring raises `broll.BrollUnavailable`
+  (retried next run) instead of failing the video; an empty answer is still `BrollError`. Publish backoff:
+  `posts.last_attempt_at` + `publish.retry_after_hours` [1, 6, 24] — a failed post is skipped until its backoff
+  passed (`runner.retry_due`), so 3 attempts span ~31 h instead of 30 min. edge-tts: 4 attempts with 2/4/8 s backoff
+  (owner's call: no fallback voice). Gemma models aren't sent `responseMimeType` (400). YouTube upload: empty file
+  refused, >3 consecutive 308s without progress → `PublishError`. Hook title: shrinks to 56 px, then keeps two lines
+  + "…" (never a third over the subtitles); `clean_title` needs an Arabic letter and rejects a title equal to the
+  spoken hook. Subtitles cope with a voice of zero words. Rank day = Cairo day (see Decisions).
 
 ## Next up
 
@@ -183,9 +201,9 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 | Phase | Scope | State |
 |---|---|---|
 | 10a | Ticks & state: A1 tick try/finally, A2 orphan row, A3 expire approved, A9 pause once, A10 bootstrap refresh, external cron trigger | ✅ 2026-09-23 (trigger deployed, dispatching every 10 min) |
-| 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ⬜ next |
+| 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ✅ 2026-09-23 |
 | 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths + authenticated bundle, S3 id regex/size cap, S4 owner id/reply check/expiry, S5–S8; `db.start_run/finish_run`; 20 new tests | ✅ 2026-09-23 |
-| 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, expiry, retry button, setMyCommands, per-video pending edit | ⬜ |
+| 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, expiry, retry button, setMyCommands, per-video pending edit | ⬜ next |
 | 12 | Content I (needs owner decisions D1–D4): niche/region weights, fit score in classify, posting windows, SEO + playlists, CTA rotation, A/B titles | ⬜ |
 | 13 | Pick-before-render via Telegram; real series (templates, quotas, evergreen source) | ⬜ |
 | 14 | Topic performance memory, traffic-source metrics, `tools`/affiliate series, second brand | ⬜ |

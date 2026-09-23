@@ -2,7 +2,9 @@
 
 Score = word-trigram containment: the share of the script's 3-word sequences that also appear in
 the source, after Arabic normalization. An independent retelling of the same facts shares names
-and a few set phrases (low score); lifted sentences share long runs (high score).
+and a few set phrases (low score); lifted sentences share long runs (high score). Containment
+alone misses one or two verbatim sentences inside an otherwise original script (two lifted
+15-word sentences ≈ 0.27), so `longest_run` also reports the longest shared word sequence (A5).
 
 Only meaningful when both texts are in the same script: an Arabic draft vs an English source
 scores ~0 regardless, so `comparable()` gates whether the check applies.
@@ -45,6 +47,30 @@ def containment(script: str, source: str, n: int = 3) -> float:
     if not grams:
         return 0.0
     return len(grams & ngrams(source, n)) / len(grams)
+
+
+def longest_run(script: str, source: str) -> tuple[int, str]:
+    """Length and text of the longest sequence of consecutive normalized words the script shares with
+    the source (plain DP over the two word lists; scripts are ~100 words, sources ≤ 20k chars).
+    Numbers extend a run but don't count toward its length: a date and an age ("في 28 ديسمبر 2025 عن
+    عمر ناهز 91 عاما", seen in a real passed script) are facts the retelling must repeat, not copied prose."""
+    a, b = normalize(script).split(), normalize(source).split()
+    if not a or not b:
+        return 0, ""
+    weight = [0 if w.isdigit() else 1 for w in a]
+    best, best_len, best_end = 0, 0, 0
+    prev_n = [0] * (len(b) + 1)          # matched tokens in the run ending at (i, j)
+    prev_w = [0] * (len(b) + 1)          # of which non-numeric
+    for i in range(1, len(a) + 1):
+        cur_n, cur_w = [0] * (len(b) + 1), [0] * (len(b) + 1)
+        for j in range(1, len(b) + 1):
+            if a[i - 1] == b[j - 1]:
+                cur_n[j] = prev_n[j - 1] + 1
+                cur_w[j] = prev_w[j - 1] + weight[i - 1]
+                if cur_w[j] > best:
+                    best, best_len, best_end = cur_w[j], cur_n[j], i
+        prev_n, prev_w = cur_n, cur_w
+    return best, " ".join(a[best_end - best_len:best_end])
 
 
 def shared_phrases(script: str, source: str, n: int = 3, limit: int = 12) -> list[str]:

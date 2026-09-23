@@ -28,6 +28,7 @@ _PERSON_WORD = re.compile(
     r"doctor|nurse|patient|fan|fans|friend|friends|family|couple|child|children|kid|kids|elderly|senior|"
     r"portrait|face|faces|selfie|smiling|user|worker|student|teacher|customer|audience)\b", re.I)
 _ARABIC = re.compile(r"[\u0600-\u06FF]")
+_ARABIC_LETTER = re.compile(r"[\u0621-\u064A\u0671-\u06D3]")
 # Weaker models sometimes emit stray CJK/Hangul/kana inside Arabic words (e.g. "مانニング").
 _STRAY = re.compile(r"[^\s\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFFA-Za-z0-9"
                     r".,:;!?%'\"()\[\]«»\-–—/…“”‘’#&+]")
@@ -100,7 +101,8 @@ def validate(data: Any, min_words: int, max_words: int) -> Draft:
     tags = [t if t.startswith("#") else f"#{t}" for t in (str(t).strip().replace(" ", "_")
                                                            for t in data.get("hashtags") or []) if t.strip("#")]
     draft = Draft(beats, str(data.get("description_en") or "").strip(), tags[:8],
-                  clean_title(data.get("hook_title")), str(data.get("series") or "").strip() or None)
+                  clean_title(data.get("hook_title"), hook=beats[0]["text"]),
+                  str(data.get("series") or "").strip() or None)
     if draft.words < min_words:
         raise DraftError(f"script is {draft.words} words — too short; add about "
                          f"{min_words + 10 - draft.words} words", draft)
@@ -110,11 +112,15 @@ def validate(data: Any, min_words: int, max_words: int) -> Draft:
     return draft
 
 
-def clean_title(value: Any, max_words: int = 6) -> str | None:
+def clean_title(value: Any, max_words: int = 6, hook: str | None = None) -> str | None:
     """A usable on-screen hook title, or None. A bad title never fails the draft (it costs a retry of
-    the whole script); the video just goes without one."""
+    the whole script); the video just goes without one. It needs at least one Arabic *letter* (Arabic
+    punctuation like "؟؟" alone doesn't count) and must not just repeat the spoken hook (A14)."""
     title = re.sub(r"\s+", " ", str(value or "")).strip().strip(".،")
-    if not title or _STRAY.search(title) or not _ARABIC.search(title) or not 1 <= len(title.split()) <= max_words:
+    if not title or _STRAY.search(title) or not _ARABIC_LETTER.search(title) \
+            or not 1 <= len(title.split()) <= max_words:
+        return None
+    if hook and similarity.normalize(title) == similarity.normalize(hook):
         return None
     return title
 
@@ -180,6 +186,7 @@ def write_script(cfg: Config, story: dict[str, Any], brand: dict[str, Any], edit
                  client: httpx.Client | None = None, winners: str = "") -> Outcome:
     """Draft → similarity gate → at most one rewrite. Raises llm.LLMError if no model answers."""
     threshold = cfg.get("script.similarity_threshold", 0.35)
+    max_run = int(cfg.get("script.max_shared_run", 8))
     source = story.get("transcript") or ""
     extra = f"EDITOR'S NOTE — apply this: {edit_note}" if edit_note else ""
     out = Outcome()
@@ -194,17 +201,23 @@ def write_script(cfg: Config, story: dict[str, Any], brand: dict[str, Any], edit
             out.versions.append(_row(d, None, "passed", version, {"gate": "skipped: source in another language"}))
             return out
         sim = round(similarity.containment(d.body_ar, source), 3)
-        if sim <= threshold:
-            out.versions.append(_row(d, sim, "passed", version, {"gate": "passed"}))
+        run, run_text = similarity.longest_run(d.body_ar, source)
+        if sim <= threshold and run < max_run:
+            out.versions.append(_row(d, sim, "passed", version, {"gate": "passed", "shared_run": run}))
             return out
         phrases = similarity.shared_phrases(d.body_ar, source)
+        # A lifted sentence is the more specific finding (A5); otherwise it's the overall overlap.
+        why = (f"{run} consecutive words copied from the source" if run >= max_run
+               else f"similarity {sim} > {threshold}")
+        if run >= max_run and run_text not in phrases:
+            phrases = [run_text] + phrases
         if version == 2:
             out.versions.append(_row(d, sim, "rejected", version,
-                                     {"reason": f"similarity {sim} > {threshold} after rewrite", "shared": phrases}))
+                                     {"reason": f"{why} after rewrite", "shared": phrases, "shared_run": run}))
             return out
-        out.versions.append(_row(d, sim, "superseded", version, {"reason": f"similarity {sim} > {threshold}",
-                                                                 "shared": phrases}))
-        log.info("Story %s: similarity %.2f > %.2f, rewriting once", story["id"], sim, threshold)
+        out.versions.append(_row(d, sim, "superseded", version, {"reason": why, "shared": phrases,
+                                                                 "shared_run": run}))
+        log.info("Story %s: %s, rewriting once", story["id"], why)
         rewrite = (f"{extra}\nYOUR PREVIOUS DRAFT STAYED TOO CLOSE TO THE SOURCE WORDING. Retell it in your "
                    f"own words with a different angle and sentence structure. Avoid these phrases: "
                    f"{' | '.join(phrases)}")

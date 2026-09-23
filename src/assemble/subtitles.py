@@ -180,8 +180,8 @@ def render_sequence(words: list[dict[str, Any]], beats: list[dict[str, Any]], ou
             renderer.draw(texts, cue, active=i).save(png, optimize=True)
             entries.append((png, end - start))
         t = cue.end
-    if total > t:
-        entries.append((blank, total - t))
+    if total > t or not entries:                      # a voice with no words still needs one entry (A15)
+        entries.append((blank, max(total - t, 0.1)))
 
     lst = out_dir / "subs.txt"
     body = "ffconcat version 1.0\n"

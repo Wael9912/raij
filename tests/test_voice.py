@@ -170,3 +170,46 @@ def test_dry_run_writes_nothing(env, caplog):
     assert "1 passed script" in caplog.text
     assert conn.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
     assert not (tmp / "assets").exists()
+
+
+# --- Phase 10b (A6, A13) -----------------------------------------------------
+
+def test_synthesize_backs_off_between_attempts(tmp_path, monkeypatch):
+    calls, naps = [], []
+
+    async def dead(*a):
+        calls.append(1)
+        raise OSError("403 from datacenter IP")
+
+    monkeypatch.setattr(tts, "_synthesize", dead)
+    with pytest.raises(tts.VoiceError, match="after 4 attempts"):
+        tts.synthesize("t", "v", "+0%", "+0Hz", tmp_path / "b.mp3", sleep=naps.append)
+    assert len(calls) == 4 and naps == [2, 4, 8]
+
+
+def test_voice_gives_up_after_max_attempts(env):
+    cfg, conn, _ = env
+    cfg.data["pipeline"] = {"max_attempts": 3, "max_age_days": 2}
+    _script(conn)
+
+    def down(*a):
+        raise tts.VoiceError("edge-tts failed")
+
+    for expect in (1, 2):
+        assert runner.voice(cfg, conn, synth=down, run=FakeAudio([]).run) == 1
+        assert json.loads(conn.execute("SELECT notes FROM scripts").fetchone()[0])["attempts"] == expect
+        assert conn.execute("SELECT count(*) FROM videos").fetchone()[0] == 0
+    assert runner.voice(cfg, conn, synth=down, run=FakeAudio([]).run) == 1
+    video = conn.execute("SELECT status, notes FROM videos").fetchone()
+    assert video["status"] == "failed" and "after 3 attempts" in json.loads(video["notes"])["reason"]
+    assert runner.voice(cfg, conn, synth=down, run=FakeAudio([]).run) == 0       # nothing pending any more
+
+
+def test_stale_passed_script_expires_instead_of_voicing(env):
+    cfg, conn, _ = env
+    _script(conn)
+    conn.execute("UPDATE scripts SET created_at = datetime('now', '-3 days')")
+    conn.commit()
+    fake = FakeAudio([50.0])
+    assert runner.voice(cfg, conn, synth=fake.synth, run=fake.run) == 0
+    assert conn.execute("SELECT status FROM scripts").fetchone()[0] == "expired" and not fake.rates

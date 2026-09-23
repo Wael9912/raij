@@ -252,3 +252,45 @@ def test_rank_dry_run_writes_nothing(env):
     assert conn.execute("SELECT COUNT(*) FROM candidates WHERE status != 'new'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
     assert not list(tmp.glob("*.json"))
+
+
+# --- Phase 10b (A11, A16) ----------------------------------------------------
+
+def test_gemma_is_not_asked_for_json_mode(env, monkeypatch):
+    cfg, _, _ = env
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-flash-latest")
+    monkeypatch.setattr(llm, "_EXHAUSTED", set())
+    cfg.data["llm"]["gemini_fallback_models"] = ["gemma-4-31b-it"]
+    bodies = {}
+
+    def handler(request):
+        model = request.url.path.split("/")[-1].split(":")[0]
+        bodies[model] = json.loads(request.content)["generationConfig"]
+        if model.startswith("gemma"):
+            return _gemini_reply({"ok": True})
+        return httpx.Response(429, json={"error": {"message": "PerDay quota"}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert llm.complete_json(cfg, "p", client=client) == {"ok": True}
+    assert bodies["gemini-flash-latest"]["responseMimeType"] == "application/json"
+    assert "responseMimeType" not in bodies["gemma-4-31b-it"]
+
+
+def test_rank_day_is_the_schedule_timezone_day(env, monkeypatch):
+    cfg, conn, tmp = env
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    cfg.data["ranking"]["batch_size"] = 5
+    _seed(conn)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 22, 22, 30, tzinfo=timezone.utc)      # 01:30 on the 23rd in Cairo
+
+    monkeypatch.setattr(runner, "datetime", Clock)
+    client = httpx.Client(transport=httpx.MockTransport(_classifier([])))
+    assert runner.rank(cfg, conn, client=client, out_dir=tmp) == 0
+    assert _report(tmp)["date"] == "2026-09-23"
+    stamps = {r[0][:10] for r in conn.execute("SELECT selected_at FROM candidates WHERE status = 'selected'")}
+    assert stamps == {"2026-09-23"}

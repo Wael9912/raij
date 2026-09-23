@@ -249,3 +249,52 @@ def test_dry_run_makes_no_calls_or_writes(env, caplog):
     assert conn.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
     assert conn.execute("SELECT status FROM candidates").fetchone()[0] == "selected"
     assert not list(tmp.glob("*.json"))
+
+
+# --- Phase 10b: attempt and age caps (A6) ------------------------------------
+
+def test_llm_outage_gives_up_after_max_attempts(env, monkeypatch):
+    cfg, conn, tmp = env
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    cfg.data["pipeline"] = {"max_attempts": 3, "max_age_days": 2}
+    _select(conn, [_rss_cand(1)])
+    calls = []
+
+    def handler(request):
+        if "generativelanguage" in request.url.host:
+            calls.append(1)
+            return httpx.Response(400, json={"error": {"message": "quota"}})
+        return httpx.Response(200, text=ARTICLE_HTML)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    for expect in (1, 2):
+        assert runner.extract(cfg, conn, client=client, run=_no_cmd, out_dir=tmp) == 1
+        row = conn.execute("SELECT status, attempts FROM candidates").fetchone()
+        assert (row["status"], row["attempts"]) == ("selected", expect)
+    assert runner.extract(cfg, conn, client=client, run=_no_cmd, out_dir=tmp) == 1
+    row = conn.execute("SELECT status, attempts FROM candidates").fetchone()
+    assert (row["status"], row["attempts"]) == ("extract_failed", 3)
+    notes = json.loads(conn.execute("SELECT notes FROM runs ORDER BY id DESC LIMIT 1").fetchone()[0])
+    assert notes["retry"] == [] and "after 3 attempts" in notes["failed"][0]["error"]
+    assert runner.extract(cfg, conn, client=client, run=_no_cmd, out_dir=tmp) == 0   # nothing pending
+    assert len(calls) == 3
+
+
+def test_stale_picks_expire_before_spending_quota(env, monkeypatch):
+    cfg, conn, tmp = env
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    _select(conn, [_rss_cand(1), _rss_cand(2)])
+    conn.execute("UPDATE candidates SET selected_at = datetime('now', '-3 days') WHERE external_id = 'e1'")
+    conn.commit()
+    calls = []
+
+    def handler(request):
+        if "generativelanguage" in request.url.host:
+            calls.append(1)
+            return _gemini(CARD)
+        return httpx.Response(200, text=ARTICLE_HTML)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert runner.extract(cfg, conn, client=client, run=_no_cmd, out_dir=tmp) == 0
+    statuses = dict(conn.execute("SELECT external_id, status FROM candidates").fetchall())
+    assert statuses == {"e1": "expired", "e2": "extracted"} and len(calls) == 1

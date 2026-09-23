@@ -3,8 +3,9 @@
 Per video: stock clips per beat (Pexels/Pixabay, cached in assets/stock) → subtitle PNGs from the
 voice word timings → end card → ffmpeg render to assets/generated/video/<video_id>.mp4, plus an
 .srt of the same captions. The videos row gets video_path, subtitle_path, broll_manifest and
-status 'rendered'. No usable clips for a beat → 'failed'; network/ffmpeg trouble writes nothing,
-so the next run retries. Without a stock key the stage stops before touching anything.
+status 'rendered'. No usable clips for a beat → 'failed'; network/ffmpeg trouble only counts
+notes.attempts, so the next run retries — until pipeline.max_attempts, then 'failed' (A6; each
+retry re-downloads 50–80 MB of stock). Without a stock key the stage stops before touching anything.
 """
 from __future__ import annotations
 
@@ -147,6 +148,13 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
                       "credits": credits, "hook_title": title, "series": series}}
 
 
+def _fail(conn: sqlite3.Connection, video: dict[str, Any], reason: str) -> None:
+    notes = {**json.loads(video.get("notes") or "{}"), "reason": reason}
+    conn.execute("UPDATE videos SET status = 'failed', notes = ? WHERE id = ?",
+                 (json.dumps(notes, ensure_ascii=False), video["id"]))
+    conn.commit()
+
+
 def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,
              run: render.RunCmd = render.run_cmd) -> int:
     pending = _pending(conn)
@@ -160,6 +168,9 @@ def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, clien
         log.info("[dry run] nothing searched, downloaded or rendered")
         return 0
 
+    db.expire_stale(conn, cfg.get("pipeline.max_age_days", 2))
+    max_attempts = int(cfg.get("pipeline.max_attempts", 3))
+    pending = _pending(conn)
     run_id = db.start_run(conn, "assemble")
     rendered, failed, retry = [], [], []
     if pending and not keys:
@@ -174,15 +185,23 @@ def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, clien
                 row = assemble_video(cfg, v, client, run=run, recent=_recent_clips(conn))
             except (broll.BrollError, render.GuardrailError) as exc:
                 log.warning("Video %d: %s", v["id"], exc)
-                notes = {**json.loads(v.get("notes") or "{}"), "reason": str(exc)}
-                conn.execute("UPDATE videos SET status = 'failed', notes = ? WHERE id = ?",
-                             (json.dumps(notes, ensure_ascii=False), v["id"]))
-                conn.commit()
+                _fail(conn, v, str(exc))
                 failed.append({"video_id": v["id"], "error": str(exc)})
                 continue
-            except Exception as exc:                    # network, ffmpeg: retry next run
-                log.error("Video %d: assemble failed, will retry next run: %s", v["id"], exc)
-                retry.append({"video_id": v["id"], "error": f"{type(exc).__name__}: {exc}"})
+            except Exception as exc:                    # network, ffmpeg, stock outage: retry next run
+                msg = f"{type(exc).__name__}: {exc}"
+                notes = json.loads(v.get("notes") or "{}")
+                notes["attempts"] = int(notes.get("attempts") or 0) + 1
+                if notes["attempts"] >= max_attempts:
+                    log.warning("Video %d: assemble failed %d times — giving up: %s", v["id"], max_attempts, msg)
+                    _fail(conn, {**v, "notes": json.dumps(notes)}, f"after {max_attempts} attempts: {msg}")
+                    failed.append({"video_id": v["id"], "error": msg})
+                    continue
+                conn.execute("UPDATE videos SET notes = ? WHERE id = ?", (json.dumps(notes, ensure_ascii=False), v["id"]))
+                conn.commit()
+                log.error("Video %d: assemble failed (attempt %d/%d), will retry next run: %s", v["id"],
+                          notes["attempts"], max_attempts, msg)
+                retry.append({"video_id": v["id"], "error": msg})
                 continue
             notes = {**json.loads(v.get("notes") or "{}"), **row["notes"]}
             conn.execute(

@@ -10,6 +10,7 @@ import asyncio
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -61,10 +62,15 @@ async def _synthesize(text: str, voice: str, rate: str, pitch: str, out: Path) -
     return words
 
 
-def synthesize(text: str, voice: str, rate: str, pitch: str, out: Path, attempts: int = 3) -> list[Word]:
-    """Write MP3 to `out` and return word timings. Retries transient network failures."""
+def synthesize(text: str, voice: str, rate: str, pitch: str, out: Path, attempts: int = 4,
+               sleep: Callable[[float], None] = time.sleep) -> list[Word]:
+    """Write MP3 to `out` and return word timings. Retries transient network failures with backoff
+    (2, 4, 8 s): edge-tts is keyless and the pipeline's one voice, so a throttle from a datacenter IP
+    gets a real chance to clear before the script is left for the next run (A13)."""
     last: Exception | None = None
-    for _ in range(attempts):
+    for i in range(attempts):
+        if i:
+            sleep(2 ** i)
         try:
             words = asyncio.run(_synthesize(text, voice, rate, pitch, out))
         except Exception as exc:                       # edge-tts raises aiohttp/websocket errors
@@ -74,7 +80,7 @@ def synthesize(text: str, voice: str, rate: str, pitch: str, out: Path, attempts
             return words
         last = VoiceError("edge-tts returned no audio")
     out.unlink(missing_ok=True)
-    raise VoiceError(f"edge-tts failed: {type(last).__name__}: {last}")
+    raise VoiceError(f"edge-tts failed after {attempts} attempts: {type(last).__name__}: {last}")
 
 
 def ffprobe_bin(cfg: Config) -> str:

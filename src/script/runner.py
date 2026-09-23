@@ -3,7 +3,8 @@
 Each (story, brand) gets its versions written in one transaction: a draft that failed the gate is
 kept as 'superseded' next to its rewrite; the last version is 'passed' or 'rejected'. An LLM
 outage writes nothing, so the next run retries. Candidates move extracted → scripted when at least
-one brand's script passed, else → script_rejected.
+one brand's script passed, else → script_rejected. Retries stop after pipeline.max_attempts outages
+or once the story is older than pipeline.max_age_days (A6).
 """
 from __future__ import annotations
 
@@ -27,13 +28,23 @@ log = logging.getLogger("raij.script")
 
 def _pending(conn: sqlite3.Connection, brand_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT s.*, c.title FROM stories s JOIN candidates c ON c.id = s.candidate_id "
+        "SELECT s.*, c.title, c.attempts FROM stories s JOIN candidates c ON c.id = s.candidate_id "
         "WHERE c.status = 'extracted' "
         "AND NOT EXISTS (SELECT 1 FROM scripts x WHERE x.story_id = s.id AND x.brand_id = ?) "
-        "ORDER BY s.id",
+        "ORDER BY s.id DESC",
         (brand_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _retry_later(conn: sqlite3.Connection, story: dict[str, Any], max_attempts: int) -> bool:
+    """Count a retryable failure on the candidate; at the cap it becomes script_rejected."""
+    attempts = int(story.get("attempts") or 0) + 1
+    story["attempts"] = attempts
+    status = ", status = 'script_rejected'" if attempts >= max_attempts else ""
+    conn.execute(f"UPDATE candidates SET attempts = ?{status} WHERE id = ?", (attempts, story["candidate_id"]))
+    conn.commit()
+    return attempts < max_attempts
 
 
 def _save(conn: sqlite3.Connection, story_id: int, brand_id: str, versions: list[dict[str, Any]]) -> int:
@@ -52,6 +63,9 @@ def _save(conn: sqlite3.Connection, story_id: int, brand_id: str, versions: list
 def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,
            out_dir: Path | None = None) -> int:
     brands = cfg.brands
+    if not dry_run:
+        db.expire_stale(conn, cfg.get("pipeline.max_age_days", 2))
+    max_attempts = int(cfg.get("pipeline.max_attempts", 3))
     work = [(b, s) for b in brands for s in _pending(conn, b["id"])]
     if dry_run:
         log.info("[dry run] %d story×brand script(s) to write; LLM: %s", len(work),
@@ -69,13 +83,18 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
     for brand, story in work:
         try:
             outcome = write_script(cfg, story, brand, client=client, winners=winners)
-        except llm.LLMError as exc:
-            log.error("Story %d (%s): no LLM answered, will retry next run: %s", story["id"], brand["id"], exc)
-            retry.append({"story_id": story["id"], "brand": brand["id"], "error": str(exc)})
-            continue
         except Exception as exc:                            # one bad item never kills the stage
-            log.exception("Story %d (%s): unexpected script error", story["id"], brand["id"])
-            retry.append({"story_id": story["id"], "brand": brand["id"], "error": f"{type(exc).__name__}: {exc}"})
+            msg = str(exc) if isinstance(exc, llm.LLMError) else f"{type(exc).__name__}: {exc}"
+            if not isinstance(exc, llm.LLMError):
+                log.exception("Story %d (%s): unexpected script error", story["id"], brand["id"])
+            if _retry_later(conn, story, max_attempts):
+                log.error("Story %d (%s): will retry next run: %s", story["id"], brand["id"], msg)
+                retry.append({"story_id": story["id"], "brand": brand["id"], "error": msg})
+            else:
+                log.warning("Story %d (%s): failed %d times — giving up", story["id"], brand["id"], max_attempts)
+                report.append({"story_id": story["id"], "brand": brand["id"], "title": story["title"],
+                               "status": "rejected", "versions": 0, "similarity": None,
+                               "reason": f"after {max_attempts} attempts: {msg}"})
             continue
         script_id = _save(conn, story["id"], brand["id"], outcome.versions)
         final = outcome.final

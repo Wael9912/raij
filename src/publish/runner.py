@@ -4,6 +4,8 @@ Hard rules: a video is published only if its status is 'approved' AND its latest
 `approvals` row with decision 'approved' for that exact video id; the /pause kill switch stops everything.
 One `posts` row per (video, platform): queued → published | exported | failed. A failure counts an
 attempt and is retried on later runs up to publish.max_attempts, then the owner gets a Telegram alert.
+Retries back off (publish.retry_after_hours, default 1 h / 6 h / 24 h from the last attempt) so three
+ticks in a row can't burn every attempt during one 30-minute outage (A8).
 Published/exported posts are never redone. A platform without keys is skipped (no row), so adding keys
 later picks up approved videos — unless they're older than publish.max_age_hours (trends go stale).
 When every platform is done, the video becomes 'published'. An approved video older than max_age_hours
@@ -15,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -67,6 +70,16 @@ def _post(conn: sqlite3.Connection, video: dict[str, Any], platform: str) -> dic
                              (video["id"], platform)).fetchone())
 
 
+def retry_due(post: dict[str, Any], schedule: list[float], now: datetime | None = None) -> bool:
+    """A failed post may be retried once its backoff since the last attempt has passed: schedule[k-1]
+    hours after attempt k (the last value repeats). A post never attempted is always due."""
+    if not post.get("attempts") or not post.get("last_attempt_at"):
+        return True
+    wait = schedule[min(int(post["attempts"]), len(schedule)) - 1] if schedule else 0
+    last = datetime.strptime(post["last_attempt_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) >= last + timedelta(hours=float(wait))
+
+
 def _notify(cfg: Config, lines: list[str], bot=None) -> None:
     if not lines:
         return
@@ -98,6 +111,7 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
              platforms: dict | None, bot) -> int:
     platforms = platforms or PLATFORMS
     max_attempts = int(cfg.get("publish.max_attempts", 3))
+    backoff = [float(h) for h in cfg.get("publish.retry_after_hours", [1, 6, 24])]
     videos = eligible(conn, cfg.get("publish.max_age_hours", 72))
     missing = {name: check(cfg) for name, (check, _) in platforms.items()}
 
@@ -135,9 +149,14 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                 post = _post(conn, v, name)
                 if post["status"] in DONE or post["attempts"] >= max_attempts:
                     continue
+                if not retry_due(post, backoff):
+                    log.info("Video %d → %s: attempt %d failed at %s, backing off", v["id"], name,
+                             post["attempts"], post["last_attempt_at"])
+                    continue
                 if run_id is None:
                     run_id = db.start_run(conn, "publish")
-                conn.execute("UPDATE posts SET attempts = attempts + 1 WHERE id = ?", (post["id"],))
+                conn.execute("UPDATE posts SET attempts = attempts + 1, last_attempt_at = datetime('now') "
+                             "WHERE id = ?", (post["id"],))
                 conn.commit()
                 try:
                     res = platforms[name][1](cfg, client, path, text, v["id"])
@@ -226,5 +245,4 @@ def finalize(cfg: Config, conn: sqlite3.Connection, max_age_hours: float | None,
 
 
 def _now() -> str:
-    from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")

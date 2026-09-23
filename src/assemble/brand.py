@@ -7,6 +7,7 @@ demuxer, like the subtitles.
 """
 from __future__ import annotations
 
+import logging
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -18,6 +19,8 @@ textshape.ensure()                                   # before PIL's font module 
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 from src.config import ROOT  # noqa: E402
+
+log = logging.getLogger("raij.assemble")
 
 FONT = ROOT / "assets" / "fonts" / "Cairo-Variable.ttf"
 LOGO = ROOT / "assets" / "brand" / "logo.png"     # optional owner-supplied logo; else a wordmark is drawn
@@ -116,11 +119,21 @@ def logo_layer(brand: dict[str, Any], out: Path, opacity: float = 0.75) -> Path:
     return out
 
 
+TITLE_MIN_SIZE = 56
+
+
 def _title_block(title: str, series: str | None) -> Image.Image:
     size = 118
-    while size > 64 and len(wrap(title, size, 960)) > 2:        # shrink to fit two lines, never drop words
+    while size > TITLE_MIN_SIZE and len(wrap(title, size, 960)) > 2:   # shrink to fit two lines, never drop words
         size -= 6
-    lines = [text_image(line, size, stroke=max(6, size // 12)) for line in wrap(title, size, 960)]
+    wrapped = wrap(title, size, 960)
+    if len(wrapped) > 2:
+        # Still too long at the smallest readable size: a third line would sit on the subtitles (A14).
+        # Keep two lines and mark the cut rather than overlap.
+        log.warning("Hook title %r needs %d lines even at %dpx — truncated", title, len(wrapped), size)
+        wrapped = wrapped[:2]
+        wrapped[1] = wrapped[1] + "…"
+    lines = [text_image(line, size, stroke=max(6, size // 12)) for line in wrapped]
     badge = pill(series, 52) if series else None
     gap = 22
     parts = ([badge] if badge else []) + lines

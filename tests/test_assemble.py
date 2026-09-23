@@ -509,3 +509,65 @@ def test_face_detector_sees_no_face_in_plain_scene():
     from src.assemble import faces
     scene = np.full((720, 405, 3), (40, 120, 200), np.uint8)
     assert faces.face_ratio(scene) == 0.0
+
+
+# --- Phase 10b (A6, A7, A14, A15) --------------------------------------------
+
+def test_stock_outage_is_retried_not_failed(env, monkeypatch):
+    cfg, conn, _ = env
+    monkeypatch.setenv("PEXELS_API_KEY", "k")
+    _voiced(cfg, conn)
+    down = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    with pytest.raises(broll.BrollUnavailable, match="nothing looked up"):
+        broll.choose(cfg, down, ["auction hammer", "crowd"], need=5, used=set())
+    assert runner.assemble(cfg, conn, client=down, run=FakeFFmpeg()) == 1
+    row = conn.execute("SELECT status, notes FROM videos").fetchone()
+    assert row["status"] == "voiced" and json.loads(row["notes"])["attempts"] == 1
+
+    # A search that answers but finds nothing is deterministic: the video fails.
+    empty = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"videos": []})))
+    with pytest.raises(broll.BrollError, match="no usable"):
+        broll.choose(cfg, empty, ["x"], need=5, used=set())
+
+
+def test_render_retries_stop_at_max_attempts(env, monkeypatch):
+    cfg, conn, _ = env
+    monkeypatch.setenv("PEXELS_API_KEY", "k")
+    cfg.data["pipeline"] = {"max_attempts": 3, "max_age_days": 2}
+    _voiced(cfg, conn)
+    fail = lambda cmd: subprocess.CompletedProcess(cmd, 1, "", "Invalid data")      # noqa: E731
+    for expect in (1, 2):
+        assert runner.assemble(cfg, conn, client=_stock_client([]), run=fail) == 1
+        row = conn.execute("SELECT status, notes FROM videos").fetchone()
+        assert row["status"] == "voiced" and json.loads(row["notes"])["attempts"] == expect
+    assert runner.assemble(cfg, conn, client=_stock_client([]), run=fail) == 1
+    row = conn.execute("SELECT status, notes FROM videos").fetchone()
+    notes = json.loads(row["notes"])
+    assert row["status"] == "failed" and notes["attempts"] == 3 and "after 3 attempts" in notes["reason"]
+    assert notes["rate"] == "+10%"                                               # earlier notes kept
+
+
+def test_stale_voiced_video_is_failed_not_rendered(env, monkeypatch):
+    cfg, conn, _ = env
+    monkeypatch.setenv("PEXELS_API_KEY", "k")
+    _voiced(cfg, conn)
+    conn.execute("UPDATE videos SET created_at = datetime('now', '-3 days')")
+    conn.commit()
+    ff = FakeFFmpeg()
+    assert runner.assemble(cfg, conn, client=_stock_client([]), run=ff) == 0
+    row = conn.execute("SELECT status, notes FROM videos").fetchone()
+    assert row["status"] == "failed" and json.loads(row["notes"])["reason"] == "expired" and not ff.cmds
+
+
+def test_title_block_never_draws_a_third_line(monkeypatch, caplog):
+    title = "كلمة " * 6
+    monkeypatch.setattr(brand, "wrap", lambda text, size, max_px: ["سطر أول", "سطر ثان", "سطر ثالث"])
+    line = brand.text_image("سطر ثالث", brand.TITLE_MIN_SIZE, stroke=6).height
+    block = brand._title_block(title.strip(), None)
+    assert block.height < 3 * line and "truncated" in caplog.text        # two lines + one gap, not three
+
+
+def test_render_sequence_with_no_words_still_covers_the_video(tmp_path):
+    lst = subtitles.render_sequence([], [], tmp_path, total=3.0)
+    body = lst.read_text()
+    assert "duration 3.000" in body and body.splitlines()[-1] == "file 'blank.png'"

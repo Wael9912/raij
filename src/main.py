@@ -25,13 +25,6 @@ STAGES = {
 }
 
 
-def _not_implemented(name: str):
-    def run(cfg, conn, args) -> int:
-        log.warning("'%s' is not implemented yet%s", name, " (dry run)" if args.dry_run else "")
-        return 0
-    return run
-
-
 def cmd_discover(cfg, conn, args) -> int:
     from src.discover.runner import discover
     return discover(cfg, conn, only=getattr(args, "source", None), dry_run=args.dry_run)
@@ -215,16 +208,10 @@ def cmd_state(cfg, conn, args) -> int:
     return 0
 
 
-HANDLERS = {name: _not_implemented(name) for name in STAGES}
-HANDLERS["discover"] = cmd_discover
-HANDLERS["rank"] = cmd_rank
-HANDLERS["extract"] = cmd_extract
-HANDLERS["script"] = cmd_script
-HANDLERS["voice"] = cmd_voice
-HANDLERS["assemble"] = cmd_assemble
-HANDLERS["review"] = cmd_review
-HANDLERS["publish"] = cmd_publish
-HANDLERS["report"] = cmd_report
+HANDLERS = {"discover": cmd_discover, "rank": cmd_rank, "extract": cmd_extract, "script": cmd_script,
+            "voice": cmd_voice, "assemble": cmd_assemble, "review": cmd_review, "publish": cmd_publish,
+            "report": cmd_report}
+assert set(HANDLERS) == set(STAGES)
 
 
 def cmd_init_db(cfg, conn, args) -> int:

@@ -1,6 +1,6 @@
 """rank: score recent candidates, screen the best for retellability, select today's top N.
 
-Selection is per UTC day and idempotent: re-running tops today's picks up to top_n rather than
+Selection is per local (schedule.timezone) day and idempotent: re-running tops today's picks up to top_n rather than
 adding another N. Political items are flagged and never selected.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -91,8 +92,11 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
     pool_size = cfg.get("ranking.classify_pool", 30)
     max_per_cat = cfg.get("ranking.max_per_category", 2)
     categories = set(cfg.get("ranking.categories", []))
+    # Selection day = the schedule's local day (Cairo), the same clock `daily_due` uses — one zone, so a
+    # manual rank around the UTC midnight can't select a second batch for the "next" day (A16).
     now = datetime.now(timezone.utc)
-    day = now.strftime("%Y-%m-%d")
+    local = now.astimezone(ZoneInfo(cfg.get("schedule.timezone", "Africa/Cairo")))
+    day = local.strftime("%Y-%m-%d")
 
     rows = _pool(conn, window)
     scored = score_rows(rows, cfg.get("ranking.weights", {}), now=now)
@@ -147,7 +151,7 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
     if boost:
         log.info("Recent winners boost categories: %s", ", ".join(sorted(boost)))
     chosen = pick(list(by_id.values()), need, categories, max_per_cat, already, boost=boost)
-    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    stamp = local.strftime("%Y-%m-%d %H:%M:%S")            # local time, so substr(…,10) is the selection day
     for r in chosen:
         conn.execute("UPDATE candidates SET status = 'selected', selected_at = ? WHERE id = ?", (stamp, r["id"]))
         r.update(status="selected", selected_at=stamp)

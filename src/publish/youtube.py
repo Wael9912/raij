@@ -35,6 +35,7 @@ TOKEN_URI = "https://oauth2.googleapis.com/token"
 UPLOAD_URI = "https://www.googleapis.com/upload/youtube/v3/videos"
 API_URI = "https://www.googleapis.com/youtube/v3"
 CHUNK = 8 * 1024 * 1024                    # multiple of 256 KiB, as the API requires
+MAX_STALLS = 3                              # consecutive 308s with no progress before giving up (A12)
 # YouTube category ids by story category.
 CATEGORY_IDS = {"news-lite": "25", "tech": "28", "sports": "17", "culture": "24", "wow-facts": "27",
                 "life-hack": "26"}
@@ -185,13 +186,15 @@ def publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, vide
                     video_id, dup)
         return Posted(dup, f"https://youtube.com/shorts/{dup}")
     size = video.stat().st_size
+    if not size:
+        raise PublishError(f"{video.name} is empty — nothing to upload")
     start = request(client, "POST", f"{UPLOAD_URI}?uploadType=resumable&part=snippet,status", json=metadata(cfg, text),
                     headers={**auth, "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": str(size)})
     session = start.headers.get("location")
     if not session:
         raise PublishError("YouTube gave no upload session URL")
     with video.open("rb") as f:
-        offset = 0
+        offset, stalled = 0, 0
         while offset < size:
             chunk = f.read(CHUNK)
             end = offset + len(chunk) - 1
@@ -200,7 +203,13 @@ def publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, vide
                                     "Content-Range": f"bytes {offset}-{end}/{size}"})
             if resp.status_code == 308:                   # resume incomplete: server says how much it has
                 have = resp.headers.get("range")
-                offset = int(have.rsplit("-", 1)[1]) + 1 if have else offset
+                new_offset = int(have.rsplit("-", 1)[1]) + 1 if have else offset
+                # A 308 that reports no progress means the chunk was dropped; a few resends are fine,
+                # an endless loop of the same 8 MiB is not (A12).
+                stalled = stalled + 1 if new_offset <= offset else 0
+                if stalled > MAX_STALLS:
+                    raise PublishError(f"YouTube upload stalled at byte {offset} of {size}")
+                offset = new_offset
                 f.seek(offset)
                 continue
             offset = size

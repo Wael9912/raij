@@ -29,7 +29,12 @@ MAX_CLIP_BYTES = 200 * 2**20                       # a stock clip is never this 
 
 
 class BrollError(RuntimeError):
-    pass
+    """No usable clips for this beat (deterministic: the video fails)."""
+
+
+class BrollUnavailable(RuntimeError):
+    """Every stock search errored (429/5xx/network) — nothing was actually looked up, so the video
+    is left for the next run instead of being failed for good (A7)."""
 
 
 @dataclass
@@ -133,13 +138,15 @@ def choose(cfg: Config, client: httpx.Client, keywords: list[str], need: float, 
     check = faceless if cfg.get("video.faceless", True) else (lambda _client, _clip: True)
     picked: list[Clip] = []
     checked: set[str] = set()
-    rejected = 0
+    rejected = searched = errored = 0
     for kw in keywords:
         found: list[Clip] = []
         for name, key in keys:
             try:
                 found += SEARCH[name](client, key, kw)
+                searched += 1
             except (FetchError, ValueError) as exc:
+                errored += 1
                 log.warning("%s search %r failed: %s", name, kw, exc)
         fresh = [c for c in found if f"{c.provider}:{c.id}" not in used | checked
                  and 2 <= c.duration <= MAX_CLIP_SECONDS]
@@ -162,6 +169,8 @@ def choose(cfg: Config, client: httpx.Client, keywords: list[str], need: float, 
     if rejected:
         log.info("Skipped %d clip(s) showing faces for %s", rejected, keywords)
     if not picked:
+        if errored and not searched:
+            raise BrollUnavailable(f"stock search failed {errored}× for {keywords} — nothing looked up")
         raise BrollError(f"no usable faceless clips for {keywords}")
     return picked
 

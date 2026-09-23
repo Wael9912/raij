@@ -56,8 +56,6 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
     }
     if system:
         body["systemInstruction"] = {"parts": [{"text": system}]}
-    if json_mode:
-        body["generationConfig"]["responseMimeType"] = "application/json"
     # Free-tier quotas are per model (gemini-flash-latest allows only 20 requests/day), so
     # fall through to the next model when one is out of quota, overloaded, or retired.
     models = [cfg.secret("GEMINI_MODEL", "gemini-flash-latest")] + cfg.get("llm.gemini_fallback_models", [])
@@ -67,7 +65,7 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
         # Only the last model gets the full backoff; otherwise an overloaded one is left fast.
         retries = CLOUD_RETRIES if i == len(live) - 1 else 1
         try:
-            resp = request(client, "POST", GEMINI_URL.format(model=model), json=body,
+            resp = request(client, "POST", GEMINI_URL.format(model=model), json=_gemini_body(body, model, json_mode),
                            headers={"x-goog-api-key": key}, retries=retries)
         except FetchError as exc:
             if any(f"HTTP {code}" in str(exc) for code in (404, 429, 503)):
@@ -84,6 +82,14 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
         log.debug("Gemini answered with %s", model)
         return "".join(p.get("text", "") for p in parts if not p.get("thought"))
     raise last or FetchError("every Gemini model is out of quota this run")
+
+
+def _gemini_body(body: dict[str, Any], model: str, json_mode: bool) -> dict[str, Any]:
+    """Gemma models reject responseMimeType with a 400 (A11), so JSON mode is asked only of Gemini
+    models; `parse_json` copes with fences and prose around the object either way."""
+    if not json_mode or model.startswith("gemma"):
+        return body
+    return {**body, "generationConfig": {**body["generationConfig"], "responseMimeType": "application/json"}}
 
 
 def _groq(cfg: Config, client: httpx.Client, prompt: str, system: str | None, json_mode: bool) -> str:
