@@ -28,3 +28,6 @@ assets/generated/*
 
 # Audit reports (local only: they describe security weaknesses of a public repo)
 AUDIT_*.md
+
+# wrangler local cache
+deploy/cloudflare-trigger/.wrangler/

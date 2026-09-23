@@ -156,7 +156,9 @@ Code changes: commit + `git push` (CI runs the tests; the next tick uses the new
 
 **Known (2026-09-23): GitHub runs the `*/10` cron only every ~2.5 h on this repo** (3 runs in 5.5 h), so taps and the
 07:00 daily run lag hours. Phase 10a added a Cloudflare Worker cron (`deploy/cloudflare-trigger/`) that dispatches the
-workflow every 10 min — deployed by the owner once (`wrangler login`, `wrangler deploy`, `secret put GH_TOKEN`).
+workflow every 10 min — **deployed 2026-09-23** as Worker `raij-trigger` (https://raij-trigger.dafatir.workers.dev, secret
+`GH_TOKEN` = fine-grained PAT "raij-trigger", Actions read/write, expires 2027-09). Redeploy: `npx wrangler deploy` in that dir;
+logs: `npx wrangler tail`. Runs now show as `workflow_dispatch` every 10 min.
 `workflow_dispatch` takes a `command` input (default `tick`): `gh workflow run raij.yml -f command=finalize`.
 
 **Full audit + improvement plan: `AUDIT_2026-09-23.md`** (local only, gitignored — read it before starting a phase).
@@ -165,7 +167,7 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 
 | Phase | Scope | State |
 |---|---|---|
-| 10a | Ticks & state: A1 tick try/finally, A2 orphan row, A3 expire approved, A9 pause once, A10 bootstrap refresh, external cron trigger | 🟡 code done 2026-09-23; Cloudflare trigger needs owner's `wrangler login` + GitHub token |
+| 10a | Ticks & state: A1 tick try/finally, A2 orphan row, A3 expire approved, A9 pause once, A10 bootstrap refresh, external cron trigger | ✅ 2026-09-23 (trigger deployed, dispatching every 10 min) |
 | 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ⬜ |
 | 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths, S3 id regex, S4 owner id/reply check, S5–S8; `stage_run()` dedupe; missing tests | ⬜ next |
 | 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, expiry, retry button, setMyCommands, per-video pending edit | ⬜ |
