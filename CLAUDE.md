@@ -22,9 +22,8 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
 Missing: YouTube API key (discovery), Reddit, Groq, Pixabay, Meta. YouTube OAuth ✅ (`data/youtube.token.json`).
-**Services run via launchd** (`install-services`): bot always on, `run-daily` 07:00, `publish` every 30 min; logs in
-`data/logs/`. After editing code, `install-services` again (restarts the bot). Don't start a second bot by hand
-(two pollers fight over getUpdates).
+**Runs on GitHub Actions** (`.github/workflows/raij.yml`, `tick` command); Mac launchd services are uninstalled
+(`install-services` still exists for a fallback). Never run a second Telegram poller (two pollers fight over getUpdates).
 Ollama is not installed. Homebrew `ffmpeg` 8.1.2 here has **no libass/drawtext** — subtitles are drawn in Python instead.
 `libraqm` is installed via Homebrew (Arabic shaping for Pillow, see `src/textshape.py`).
 
@@ -70,7 +69,8 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
 - LLM chain: GEMINI_MODEL → `llm.gemini_fallback_models` (full flash 3.7/3.6/3.5/3-preview, then lite, Gemma).
   404/429 → model skipped for the run; 503 → 1 retry unless last; unparseable output → same provider re-asked once.
   **flash-lite writes poor Arabic** (typos, stray katakana, wrong numbers) — keep it late in the chain.
-- Script: card-only prompt (`script_write.txt`); model asked for 120–140 words, 110–150 accepted (models undershoot).
+- Script: card-only prompt (`script_write.txt`); model asked for min+10..max−10 words, `script.min/max_words` accepted
+  (models undershoot; see the 85–115 bullet below).
   Numbers as **digits** so `script/facts.py` can check each against the card (rounding allowed only below the
   figure's last non-zero digit; ≤12 unchecked). Spelled-out figures ("مليون") are not checked — Phase 7 review.
   Similarity = normalized Arabic word-trigram containment (`script/similarity.py`); real retellings score
@@ -141,11 +141,29 @@ and read the log, or use the weekly encrypted backup from Telegram (`state unpac
 `gh variable set RAIJ_ENABLED --body false`, restore the latest state on the Mac, `install-services`.
 Code changes: commit + `git push` (CI runs the tests; the next tick uses the new code).
 
-1. First unattended daily run: tomorrow ~07:00 Cairo (first tick after 07:00). Watch that run's log: Gemini quota,
-   edge-tts from GitHub IPs, render time.
-2. **Owner: Meta keys** — paste App ID, App Secret, short-lived token → exchange → add to .env →
+**Known (2026-09-23): GitHub runs the `*/10` cron only every ~2.5 h on this repo** (3 runs in 5.5 h), so taps and the
+07:00 daily run lag hours. Phase 10a adds an external trigger.
+
+**Full audit + improvement plan: `AUDIT_2026-09-23.md`** (local only, gitignored — read it before starting a phase).
+Sections A code, B security, C bot UX, D content strategy (with the owner decisions needed), E phases 10–15.
+"start" / "next phase" now means the next unfinished phase in that plan.
+
+| Phase | Scope | State |
+|---|---|---|
+| 10a | Ticks & state: A1 tick try/finally, A2 orphan row, A3 expire approved, A9 pause once, A10 bootstrap refresh, external cron trigger | ⬜ next |
+| 10b | Gates & retries: A4 number tolerance, A5 shared-run check, A6 attempt/age caps, A7 transient Pexels, A8 backoff, A11–A16 | ⬜ |
+| 10c | Security: S1 SHA pins/credential scoping, S2 unpack paths, S3 id regex, S4 owner id/reply check, S5–S8; `stage_run()` dedupe; missing tests | ⬜ |
+| 11 | Bot UX: /queue, digest, why-picked + Arabic title in caption, parent line, expiry, retry button, setMyCommands, per-video pending edit | ⬜ |
+| 12 | Content I (needs owner decisions D1–D4): niche/region weights, fit score in classify, posting windows, SEO + playlists, CTA rotation, A/B titles | ⬜ |
+| 13 | Pick-before-render via Telegram; real series (templates, quotas, evergreen source) | ⬜ |
+| 14 | Topic performance memory, traffic-source metrics, `tools`/affiliate series, second brand | ⬜ |
+| 15 | >60 s variants for TikTok/FB, weekly long-form compile | ⬜ |
+
+Still pending from before:
+1. **Owner: Meta keys** — paste App ID, App Secret, short-lived token → exchange → add to .env →
    `grep -vE '^(RAIJ_STATE_KEY)=' .env | gh secret set RAIJ_ENV -R Wael9912/raij`. #20 #21 #23 still owe IG/FB until
-   ≈2026-09-25 14:37 UTC.
+   ≈2026-09-25 14:37 UTC (A3 makes them stall in state.enc until then).
+2. Watch the first unattended daily run's log: Gemini quota, edge-tts from GitHub IPs, render time.
 3. Later: YouTube Data API key (discovery), Pixabay key, CC0 music.
 
 ## Phase 8 (Publish) — as built
@@ -171,6 +189,7 @@ Code changes: commit + `git push` (CI runs the tests; the next tick uses the new
 
 ## Later phases — watch-outs
 
-- Phase 6 guardrail: assembler may only read from `config.ALLOWED_MEDIA_DIRS` (`assets/stock`, `assets/generated`).
+- Phase 6 guardrail: assembler may only read from `config.ALLOWED_MEDIA_SUBDIRS` (`assets/stock`, `assets/generated`,
+  `assets/music`).
 - Phase 8: no publish without an `approvals` row; respect `db.publishing_paused()`.
 - YouTube quota (10k/day) is shared between discovery (~1,620/day) and Shorts uploads (~1,600 each).

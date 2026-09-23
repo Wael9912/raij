@@ -5,14 +5,19 @@ description: Continue building the Ra'ij trend-to-Arabic-shorts pipeline — sta
 
 # Build the next Ra'ij phase
 
-0. **"check"** means: report live state, don't build. Read the review bot's log if one is running
-   (background task output), then `sqlite3 data/pipeline.db` for `videos` statuses, `approvals`, `control`
-   flags, and say what changed since the last report and what the owner still has to do.
+0. **"check"** means: report live state, don't build. The pipeline runs on GitHub Actions:
+   `gh run list -R Wael9912/raij --workflow raij.yml --limit 10` (note the real gaps between scheduled runs)
+   and `gh run view <id> --log | grep raij`. The live DB is only in the Actions cache; the local
+   `data/pipeline.db` is stale unless restored from the weekly Telegram backup. Say what changed since the last
+   report and what the owner still has to do. Never start the Mac bot/pipeline while Actions is enabled.
 
-1. **Orient.** Read `CLAUDE.md`: the status table, the **"Next up"** section (owner feedback is done before
-   the next numbered phase), conventions, decisions, and the phase plan. Read the matching phase in
+1. **Orient.** Read `CLAUDE.md`: the status table, the **"Next up"** phase table, conventions, decisions. For
+   phases 10–15 read the matching section of `AUDIT_2026-09-23.md` (local, gitignored; findings carry ids like
+   A1/S1/U1 — reference them in commits). For the original phases read
    `CLAUDE_CODE_BUILD_BRIEF_v2_raij-shorts.md`. Run `git log --oneline -5`, `git status`, `uv run pytest -q`.
    Check which keys exist: `grep -E "^[A-Z_]+=." .env | sed 's/=.*//'` (never print values).
+   Phase 12 needs the owner's answers to audit section D (niche, market, dialect/voice, affiliate series) —
+   ask for them first, don't assume.
 
 2. **Build** following the conventions in `CLAUDE.md`:
    - `src/<stage>/runner.py` + wire the handler in `src/main.py`; `--dry-run` = no network, no writes.
@@ -43,5 +48,8 @@ description: Continue building the Ra'ij trend-to-Arabic-shorts pipeline — sta
 ## Owner notes
 - Terse messages. Keys get pasted into chat: validate each only against its own service, save it into `.env`
   without echoing it, and remind them it's in the chat log.
-- The Telegram review bot is not a service yet — start `uv run python -m src.main bot` in the background
-  when reviews are pending, and restart it after changing `src/review/`.
+- Live verification of bot/tick changes: run on a *copy* of a restored DB locally with `tick --dry-run` and the
+  mocked tests, then push and watch the next Actions run (`workflow_dispatch` to force one). Never run a second
+  Telegram poller against the live bot token while Actions is enabled.
+- Code changes reach production by `git push` to main (CI tests run; the next tick uses the new code). Commit
+  per phase or per fix, then update the phase table in `CLAUDE.md` and the project memory.
