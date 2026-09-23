@@ -6,7 +6,9 @@ description: Continue building the Ra'ij trend-to-Arabic-shorts pipeline — sta
 # Build the next Ra'ij phase
 
 0. **"check"** means: report live state, don't build. The pipeline runs on GitHub Actions:
-   `gh run list -R Wael9912/raij --workflow raij.yml --limit 10` (note the real gaps between scheduled runs)
+   `gh run list -R Wael9912/raij --workflow raij.yml --limit 10` — runs should be `workflow_dispatch` ~10 min apart
+   (Cloudflare Worker `raij-trigger`, `deploy/cloudflare-trigger/`; if they stop, `npx wrangler tail` there —
+   401/403 = the `GH_TOKEN` PAT expired, renew it 2027-09)
    and `gh run view <id> --log | grep raij`. The live DB is only in the Actions cache; the local
    `data/pipeline.db` is stale unless restored from the weekly Telegram backup. Say what changed since the last
    report and what the owner still has to do. Never start the Mac bot/pipeline while Actions is enabled.
@@ -48,6 +50,8 @@ description: Continue building the Ra'ij trend-to-Arabic-shorts pipeline — sta
 ## Owner notes
 - Terse messages. Keys get pasted into chat: validate each only against its own service, save it into `.env`
   without echoing it, and remind them it's in the chat log.
+- Auto mode blocks secret-store writes (`wrangler secret put`, `gh secret set`): prepare the exact command and
+  ask the owner to run it with the `! <cmd>` prefix; test the key with a plain API call first.
 - Live verification of bot/tick changes: run on a *copy* of a restored DB locally with `tick --dry-run` and the
   mocked tests, then push and watch the next Actions run (`workflow_dispatch` to force one). Never run a second
   Telegram poller against the live bot token while Actions is enabled.
