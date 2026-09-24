@@ -85,7 +85,10 @@ class TikTokServer:
                                              "error": {"code": "ok"}})
         if path.endswith("/inbox/video/init/") or path.endswith("/publish/video/init/"):
             if self.init_error:
-                return httpx.Response(200, json={"data": {}, "error": {"code": self.init_error, "message": "nope"}})
+                status = 400 if self.init_error.startswith("spam_risk") else 200      # live: the drafts cap is a 400
+                # TikTok's message text repeats the code (live 2026-09-24: "HTTP 400 spam_risk_too_many_pending_share…")
+                return httpx.Response(status, json={"data": {}, "error": {"code": self.init_error,
+                                                                          "message": f"{self.init_error}: nope"}})
             body = json.loads(req.content)
             self.init = body
             self.n += 1

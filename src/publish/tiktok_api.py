@@ -320,8 +320,15 @@ def _api(client: httpx.Client, url: str, token: str, body: dict[str, Any]) -> di
         resp = request(client, "POST", url, json=body,
                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=UTF-8"})
     except FetchError as exc:
-        if "HTTP 401" in str(exc) or "HTTP 403" in str(exc):
-            raise PublishError(f"TikTok refused the token ({exc}) — run `uv run python -m src.main tiktok-auth`") from None
+        # Some errors come as HTTP 400 with the same envelope (live 2026-09-24: the pending-drafts cap
+        # `spam_risk_too_many_pending_share` was a 400) — classify them the same way as the 200-envelope ones.
+        text = str(exc)
+        hit = next((c for c in LIMIT_CODES if c in text), None)
+        if hit:
+            raise QuotaExhausted(f"TikTok limit: {hit} — post or delete the drafts waiting in your TikTok inbox; "
+                                 "the queue continues by itself") from None
+        if any(c in text for c in AUTH_CODES) or "HTTP 401" in text or "HTTP 403" in text:
+            raise PublishError(f"TikTok refused the token ({text[:160]}) — run `uv run python -m src.main tiktok-auth`") from None
         raise
     try:
         payload = resp.json()
