@@ -1,0 +1,16 @@
+# Tiny public site for Ra'ij: the privacy policy and terms pages that platform developer portals (TikTok,
+# Meta) require when registering the app, plus a landing page. Static HTML in worker.js, no data, no storage.
+#
+# Deploy (from this directory):   npx wrangler deploy      → https://raij.dafatir.workers.dev
+# TikTok "URL property" verification (only if you ever add one): set the two vars below and redeploy;
+# the worker then serves TIKTOK_VERIFY_BODY at /<TIKTOK_VERIFY_PATH>.
+name = "raij"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+TIKTOK_VERIFY_PATH = ""
+TIKTOK_VERIFY_BODY = ""
+
+[observability]
+enabled = true

@@ -114,6 +114,25 @@ def cmd_youtube_auth(cfg, conn, args) -> int:
     return 0
 
 
+def cmd_tiktok_auth(cfg, conn, args) -> int:
+    """One-time TikTok consent (Desktop Login Kit, loopback redirect); stores tokens in data/tiktok.token.json."""
+    from src.discover.common import make_client
+    from src.publish import tiktok_api
+    why = tiktok_api.missing(cfg)
+    if why and "not set" in why:
+        log.error("%s", why)
+        return 1
+    if args.dry_run:
+        log.info("[dry run] would open TikTok consent for scopes %s with redirect %s", ",".join(tiktok_api.scopes(cfg)),
+                 tiktok_api.redirect_uri(cfg))
+        return 0
+    with make_client() as client:
+        path, who = tiktok_api.authorize(cfg, client)
+    log.info("TikTok authorized%s — token saved to %s (mode: %s)", f" as {who}" if who else "",
+             path.relative_to(cfg.root), tiktok_api.mode(cfg))
+    return 0
+
+
 def cmd_report(cfg, conn, args) -> int:
     from src.analytics.runner import report
     return report(cfg, conn, dry_run=args.dry_run, weekly=True if getattr(args, "weekly", False) else None)
@@ -427,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
         "from-script": ("Queue an owner-written script file to voice and render (then `produce`)", cmd_script_file),
         "bot": ("Listen for Telegram review decisions (long-running)", cmd_bot),
         "youtube-auth": ("One-time Google consent for YouTube uploads", cmd_youtube_auth),
+        "tiktok-auth": ("One-time TikTok consent (inbox drafts now, direct posting after the audit)", cmd_tiktok_auth),
         "install-services": ("Run bot, daily pipeline and publishing in the background (launchd)",
                              cmd_install_services),
         "uninstall-services": ("Stop and remove the background services", cmd_uninstall_services),

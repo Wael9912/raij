@@ -33,7 +33,7 @@ from src.assemble.render import guard
 from src.config import Config
 from src.discover.common import FetchError, make_client
 from src.lock import Busy, single
-from src.publish import meta, tiktok, windows, youtube
+from src.publish import meta, tiktok, tiktok_api, windows, youtube
 from src.publish.common import Posted, PostText, PublishError, PublishSkipped, QuotaExhausted, post_text
 
 log = logging.getLogger("raij.publish")
@@ -43,10 +43,12 @@ PLATFORMS: dict[str, tuple[Callable[[Config], str | None], Publisher]] = {
     "youtube": (youtube.missing, youtube.publish),
     "instagram": (meta.missing_instagram, meta.publish_instagram),
     "facebook": (meta.missing_facebook, meta.publish_facebook),
-    "tiktok_export": (tiktok.missing, tiktok.export),
+    "tiktok": (tiktok_api.missing, tiktok_api.publish),          # inbox draft now, direct post after the audit
+    "tiktok_export": (tiktok.missing, tiktok.export),           # the Telegram copy, skipped once `tiktok` is connected
 }
 DONE = ("published", "exported")
-PLATFORM_NAME = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook", "tiktok_export": "TikTok"}
+PLATFORM_NAME = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook", "tiktok": "TikTok",
+                 "tiktok_export": "TikTok copy"}
 
 
 def eligible(conn: sqlite3.Connection, max_age_hours: float | None = None) -> list[dict[str, Any]]:
@@ -75,8 +77,12 @@ def wanted_platforms(cfg: Config, video: dict[str, Any], known: dict | None = No
     and anything not in `known`."""
     known = known or PLATFORMS
     want = formats.wanted_platforms(video, _brand(cfg, video.get("brand_id") or ""))
+    if "tiktok_export" in want and "tiktok" not in want:        # picks made before the TikTok app existed
+        want.insert(want.index("tiktok_export"), "tiktok")
+    if "tiktok" in want and "tiktok_export" in want and tiktok_api.connected(cfg):
+        want.remove("tiktok_export")                             # the app replaces the Telegram copy
     if str(video.get("kind") or "short") == "long":
-        allowed = set(cfg.get("publish.long_platforms", ["youtube", "tiktok_export"]) or [])
+        allowed = set(cfg.get("publish.long_platforms", ["youtube", "tiktok", "tiktok_export"]) or [])
         want = [p for p in want if p in allowed]
     return [p for p in want if p in known]
 
@@ -147,7 +153,9 @@ def _label(v: dict[str, Any]) -> str:
 
 
 def _link(name: str, res: Posted) -> str:
-    if res.status == "exported":                        # TikTok: the copy went to Telegram; a repo path is noise
+    if name == "tiktok" and res.status == "exported":   # inbox draft: finish in the app
+        return "in your TikTok inbox — open the notification, paste the caption from the chat above, post"
+    if res.status == "exported":                        # the copy went to Telegram; a repo path is noise
         return "copy sent above — upload from your phone"
     return res.url
 

@@ -23,7 +23,8 @@ EXTRA = {"rt": "retry", "ba": "approve_all", "bs": "skip_all", "bx": "cancel", "
          "pk": "pick", "pf": "pick_format", "pp": "pick_platform", "pn": "pick_next", "pb": "pick_back",
          "pg": "pick_go", "px": "pick_cancel"}
 ROLE_AR = {"hook": "🎣 الافتتاحية", "body": "📖", "payoff": "💡 الخلاصة", "cta": "📣 الدعوة"}
-PLATFORM = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook", "tiktok_export": "TikTok"}
+PLATFORM = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook", "tiktok": "TikTok",
+            "tiktok_export": "TikTok copy"}
 COMMANDS = [
     ("trending", "Find what's trending now and pick topics to make"),
     ("topic", "Make a video about a topic: /topic <text>"),

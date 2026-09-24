@@ -535,11 +535,12 @@ def test_wanted_platforms_filters_long_videos(env):
     cfg, _, _ = env
     cfg.brands[0]["platforms"] = ["instagram", "facebook", "youtube", "tiktok_export"]
     short = {"brand_id": "raij", "kind": "short", "wanted": None}
-    assert pub_runner.wanted_platforms(cfg, short) == ["instagram", "facebook", "youtube", "tiktok_export"]
+    # `tiktok_export` (the Telegram copy) implies the TikTok app too, so picks made before the app existed follow.
+    assert pub_runner.wanted_platforms(cfg, short) == ["instagram", "facebook", "youtube", "tiktok", "tiktok_export"]
     long = {"brand_id": "raij", "kind": "long", "wanted": formats.encode(["long"], ["instagram", "youtube"])}
     assert pub_runner.wanted_platforms(cfg, long) == ["youtube"]
     picked = {"brand_id": "raij", "kind": "short", "wanted": formats.encode(["short"], ["tiktok_export", "nope"])}
-    assert pub_runner.wanted_platforms(cfg, picked) == ["tiktok_export"]
+    assert pub_runner.wanted_platforms(cfg, picked) == ["tiktok", "tiktok_export"]
 
 
 def test_youtube_long_metadata_has_chapters_and_no_shorts_tag(env):

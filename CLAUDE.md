@@ -21,6 +21,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 9 Analytics + runner | ✅ done | `096c920` | live: YouTube metrics for 3 Shorts, weekly report sent; launchd bot/daily/publish installed and running. IG/FB insights mock-only |
 | 13 Pick + produce from the bot | ✅ done | (this commit) | `/trending` pick list → format + platforms → `produce` job; `/topic`, `/script`, `/run`, `/jobs`; Wikipedia top-views source; manual picks outside the daily quota |
 | 15 Long-form | ✅ done | (this commit) | `long` format: 1920×1080, 2–5 min, chapters (cards + YouTube timestamps), thumbnail, calmer voice; live: #30 «gold» 3 min from a /topic. `ranking.long_top_n` = 1 automatic long/day |
+| 17 TikTok app | 🟡 built, awaiting owner's app keys | (2026-09-24) | `publish/tiktok_api.py`: Content Posting API, **inbox mode** (draft in the owner's TikTok inbox + caption to Telegram; owner posts from the app) now, `direct` after TikTok's audit; `tiktok-auth` (Desktop Login Kit, loopback 127.0.0.1:8471, hex-PKCE); public privacy/terms at https://raij.dafatir.workers.dev (`deploy/site/`); SETUP.md §8 |
 | 13b Post now | ✅ done | (2026-09-24) | audit "approved videos never all post": windows allow 4/day vs ~9 made/day + Meta keys missing + zombie job blocked the bot queue. `/post_now [ids]` (confirm tap) → `videos.notes.post_now` → `publish` job; `publish --now`; `publish.windows.per_window`; zombie-safe `jobs.alive` |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
@@ -304,6 +305,23 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   #35's Short and #36 was never uploaded. `existing(kind=)` now requires the same format (a Short's description
   ends with "#Shorts"), and the runner refuses an external id that already belongs to another video (post →
   `failed`, retried). #36 was reset and re-uploaded. Consider a distinct long title (SEO) later.
+
+- **TikTok app (2026-09-24, owner: "draft on app and me posting"):** platform `tiktok` = `publish/tiktok_api.py`
+  (Content Posting API). `publish.tiktok.mode: inbox` uploads the MP4 to the owner's TikTok **inbox**
+  (`/v2/post/publish/inbox/video/init/`, FILE_UPLOAD chunks 5–64 MB / last ≤128 MB / `floor(size/chunk)` count, then
+  `status/fetch` until `SEND_TO_USER_INBOX`); the inbox call takes no text, so the caption goes to Telegram and the
+  owner pastes it in the app → post `exported`. `direct` mode (`video.publish`, after TikTok's audit) queries
+  creator-info and **refuses** when the wanted privacy isn't offered (unaudited apps = SELF_ONLY forever) instead of
+  posting private; `is_aigc` label on. Auth: `tiktok-auth` = Desktop Login Kit, redirect `http://127.0.0.1:8471/callback/`
+  (must be registered exactly; `publish.tiktok.redirect_port`), PKCE with the **hex** SHA-256 challenge; tokens in
+  `data/tiktok.token.json` (0600; access 24 h, refresh 365 d and rotating — file rewritten after each refresh;
+  `username` kept for status). TikTok's errors are HTTP 200 + `error.code`: limit codes
+  (`rate_limit_exceeded`, `spam_risk_too_many_pending_share`, `spam_risk_too_many_posts`, banned) → `QuotaExhausted`
+  (attempt given back), auth codes → "run tiktok-auth". Wiring: `tiktok_export` in a wanted list implies `tiktok`;
+  once the app is connected `wanted_platforms()` drops the export and `tiktok.missing()` steps aside; brand platforms
+  and `long_platforms` list both. Public pages for the developer portal: `deploy/site/` worker →
+  https://raij.dafatir.workers.dev/{privacy,terms}. **Owner's part:** developer app (Desktop platform, Login Kit +
+  Content Posting API, sandbox target user = own account) → paste `TIKTOK_CLIENT_KEY`/`SECRET` → `tiktok-auth`.
 
 ## Next up
 

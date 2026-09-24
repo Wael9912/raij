@@ -127,6 +127,48 @@ ffmpeg -hide_banner -encoders | grep libx264      # H.264 encoder must be presen
 
 ---
 
+## 8. TikTok: developer app → drafts in your inbox (now) → direct posting (after TikTok's audit)
+
+TikTok's Content Posting API has two stages. **Unaudited apps can only create private posts**, and a post made
+private stays private, so Ra'ij starts in **inbox mode**: it uploads the finished MP4 into your TikTok *inbox*
+(scope `video.upload`); TikTok notifies you in the app, you open it, paste the caption the bot sends to Telegram,
+and tap Post. After TikTok audits the app, switch `publish.tiktok.mode` to `direct` and it posts public by itself.
+
+1. **Public pages (already deployed):** https://raij.dafatir.workers.dev/privacy and …/terms
+   (`deploy/site/`, `npx wrangler deploy`). The portal asks for both URLs.
+2. **Developer account + app:** log in at https://developers.tiktok.com with the TikTok account you post from
+   (رائج) → *Manage apps* → *Connect an app*. Name "Ra'ij", category e.g. *Entertainment*, description
+   "Personal tool: uploads the owner's own Arabic explainer videos to the owner's account", icon = the channel logo,
+   Terms of Service URL and Privacy Policy URL from step 1.
+3. **Platform:** add **Desktop** (not Web — Desktop allows the local redirect) with redirect URI exactly
+   `http://127.0.0.1:8471/callback/` (`publish.tiktok.redirect_port`).
+4. **Products:** add **Login Kit** and **Content Posting API**. Scopes: `user.info.basic`, `video.upload`; add
+   `video.publish` too if you want it covered by the review from the start (direct mode needs it later).
+   For Content Posting API answer *FILE_UPLOAD* (no URL property / domain verification needed for uploads from disk).
+5. **Sandbox (works before any review):** in the app, create a *Sandbox*, add your own TikTok account as a
+   **target user** (accept the invitation in the TikTok app), and copy the sandbox **Client key** and **Client secret**.
+   Paste both into the chat (or write them yourself):
+   ```
+   TIKTOK_CLIENT_KEY=…
+   TIKTOK_CLIENT_SECRET=…
+   ```
+   Then `uv run python -m src.main tiktok-auth`: the browser opens TikTok's consent page, you approve, the tokens land
+   in `data/tiktok.token.json` (gitignored, 0600) and the log says `TikTok authorized as @…`. From the next publish
+   pass every approved video goes to your TikTok inbox; the old Telegram copy (`tiktok_export`) steps aside by itself.
+6. **Production keys:** *Submit for review* in the portal (basic app review: description + a short screen recording of
+   the login → upload → post flow). When approved, replace the two `.env` values with the production key/secret and
+   run `tiktok-auth` again. Inbox mode keeps working the same way.
+7. **Direct posting (later):** apply for the Content Posting API audit (demo video showing the privacy picker fed by
+   creator-info, the AI-content label, no hard-coded "public"). When TikTok lifts the private-only restriction:
+   `publish.tiktok.mode: direct`, `scopes` + `video.publish`, `tiktok-auth` again. Before that, direct mode refuses to
+   post (it would be private forever) and tells you so.
+
+Limits worth knowing: uploads ≤ 10 min and ≤ 4 GB; 6 upload starts/min; TikTok caps *unposted* inbox drafts
+(`spam_risk_too_many_pending_share`) — post or delete the drafts and the queue continues; those limits don't count
+as failed attempts. Revoking the app in TikTok → Settings → Security → *Apps and websites* disconnects it.
+
+---
+
 ## GitHub Actions — the hosted fallback (paused 2026-09-23; the Mac runs the pipeline now)
 
 Paused because runs were slow to start and the bot couldn't trigger production there. The workflow is

@@ -13,6 +13,9 @@ from src.publish.common import Posted, PostText, PublishError
 
 
 def missing(cfg: Config) -> str | None:
+    from src.publish import tiktok_api
+    if tiktok_api.connected(cfg):
+        return "TikTok app connected — the Telegram copy isn't needed (platform `tiktok`)"
     return None
 
 

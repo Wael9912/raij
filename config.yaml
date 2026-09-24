@@ -45,7 +45,7 @@ brands:
       "أداة اليوم":
         - "الرابط في الوصف"
         - "جربها وقل لنا رأيك"
-    platforms: [instagram, facebook, youtube, tiktok_export]
+    platforms: [instagram, facebook, youtube, tiktok, tiktok_export]   # tiktok = app inbox/direct; export = Telegram copy until it's connected
 
 discovery:
   regions: [SA, AE, EG, SD]
@@ -190,7 +190,17 @@ publish:
     per_window: 1                  # videos a window may start (4 windows × 1 = 4 videos/day; /post_now skips windows)
   youtube_privacy: public          # public | unlisted | private
   # Platforms that take a `long` video (Reels/Shorts APIs cap at 60–90 s); TikTok is a file export anyway.
-  long_platforms: [youtube, tiktok_export]
+  long_platforms: [youtube, tiktok, tiktok_export]
+  # TikTok Content Posting API (SETUP.md §8). mode: inbox = upload to the owner's TikTok inbox, they paste the
+  # caption and post from the app (works before TikTok's audit); direct = post straight to the profile
+  # (needs the audited app + scope video.publish; before that TikTok forces SELF_ONLY, so direct refuses).
+  tiktok:
+    mode: inbox
+    redirect_port: 8471            # registered redirect: http://127.0.0.1:8471/callback/ (Desktop platform)
+    scopes: [user.info.basic, video.upload]
+    chunk_mb: 10
+    privacy: PUBLIC_TO_EVERYONE    # direct mode only; must be among the creator-info options
+    is_aigc: true                  # direct mode: the AI-generated label (voice + script are generated)
   youtube_thumbnails: true         # long videos: upload the generated thumbnail (50 quota units)
   youtube_playlists: true          # add each Short to a playlist named after its series (needs the `youtube` scope)
   # SEO (Phase 12): fixed niche tags merged into every post's tags/hashtags, by story category.
