@@ -373,6 +373,12 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   (5) `db.start_run` closes `running` rows of the same command older than 6 h as failed `{"interrupted": 1}`.
   (6) `llm._OVERLOADED`: a Gemini model that answered 503 rests `llm.overload_cooldown_seconds` (300) before
   it's probed again — live, every call walked five overloaded flash models (~25 s) before flash-lite answered.
+  (7) **The render itself was 10× slower than it should be:** the launchd plists said `ProcessType: Background`,
+  which clamps the job — and every child the bot spawns — to background QoS (efficiency cores, low priority on
+  Apple Silicon). Video 47's exact ffmpeg command: 227 s in the pipeline, 252 s under `taskpolicy -b`, 25 s at the
+  default policy (`h264_videotoolbox`/hwdec/filter threads changed nothing; `-preset veryfast` alone would halve
+  the 25 s). Plists are now `Standard` (the bot's PRI went 4 → 20); a Short should assemble in ~1.5 min instead
+  of ~5, a long video in ~3 instead of ~16 — check `videos.notes.timing.render` on the next run.
   Owner options not done here: `sudo pmset repeat wakeorpoweron MTWRFSU 10:28:00` (wake for the daily run),
   keep the lid open/on AC while it runs, or a hosted fallback.
 

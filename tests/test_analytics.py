@@ -229,6 +229,7 @@ def test_service_plists_and_install(env, tmp_path, monkeypatch):
     assert specs["com.raij.publish"]["ProgramArguments"][-2:] == ["publish", "--catch-up"]   # finishes leftovers
     assert all(s["WorkingDirectory"] == str(cfg.root) and "/opt/homebrew/bin" in s["EnvironmentVariables"]["PATH"]
                for s in specs.values())
+    assert all(s["ProcessType"] == "Standard" for s in specs.values())   # Background = efficiency cores, 10× slower renders
     cmds = []
 
     def run(cmd):

@@ -45,7 +45,10 @@ def plists(cfg: Config) -> dict[str, dict]:
                 "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
                                          "LANG": "en_US.UTF-8", "PYTHONUNBUFFERED": "1"},
                 "StandardOutPath": str(logs / f"{name}.log"), "StandardErrorPath": str(logs / f"{name}.log"),
-                "ProcessType": "Background", **extra}
+                # Standard, not Background: launchd's Background type clamps the job (and every child the bot
+                # spawns) to background QoS — efficiency cores at low priority on Apple Silicon. Measured
+                # 2026-09-24 on the M3: the same ffmpeg render took 252 s under `taskpolicy -b` and 25 s without.
+                "ProcessType": "Standard", **extra}
 
     return {
         "com.raij.bot": job("com.raij.bot", "bot", RunAtLoad=True, KeepAlive=True, ThrottleInterval=30),
