@@ -10,13 +10,15 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
+from src.publish import windows
 from src.review.telegram import MAX_CAPTION
 
 ACTIONS = {"ap": "approved", "rj": "rejected", "ed": "edit", "nb": "new_broll", "rv": "revoice"}
 # Actions that don't refer to one in-review card: retry a failed publish, confirm/cancel a bulk command.
 # Bulk callbacks carry the highest in-review id the owner saw, so cards that arrive later are untouched.
-EXTRA = {"rt": "retry", "ba": "approve_all", "bs": "skip_all", "bx": "cancel",
+EXTRA = {"rt": "retry", "ba": "approve_all", "bs": "skip_all", "bx": "cancel", "nw": "post_now",
          # the pick flow (review/picks.py): toggle item / format / platform, next, back, go, cancel
          "pk": "pick", "pf": "pick_format", "pp": "pick_platform", "pn": "pick_next", "pb": "pick_back",
          "pg": "pick_go", "px": "pick_cancel"}
@@ -30,6 +32,7 @@ COMMANDS = [
     ("jobs", "What's being produced right now"),
     ("queue", "What's waiting for review or publishing"),
     ("status", "Publishing state and counts"),
+    ("post_now", "Post approved videos now, skipping the posting windows (asks first)"),
     ("approve_all", "Approve every card in review (asks first)"),
     ("skip", "Reject every card in review (asks first)"),
     ("pause", "Stop all publishing"),
@@ -40,10 +43,11 @@ COMMANDS = [
 # Permanent button bar under the chat input (reply keyboard): each button sends its label as a message and
 # `BUTTONS` maps it to the command. ✍️ Topic / 📝 Script first ask for the text with a reply prompt.
 BUTTONS = {"🔥 Trending": "/trending", "✍️ Topic": "/topic", "📝 Script": "/script", "▶️ Run daily": "/run",
-           "⚙️ Jobs": "/jobs", "📋 Queue": "/queue", "📊 Status": "/status", "❓ Help": "/help"}
+           "⚙️ Jobs": "/jobs", "📋 Queue": "/queue", "🚀 Post now": "/post_now", "📊 Status": "/status",
+           "❓ Help": "/help"}
 MAIN_KEYBOARD = {"keyboard": [[{"text": t} for t in ("🔥 Trending", "✍️ Topic", "📝 Script")],
                               [{"text": t} for t in ("▶️ Run daily", "⚙️ Jobs", "📋 Queue")],
-                              [{"text": t} for t in ("📊 Status", "❓ Help")]],
+                              [{"text": t} for t in ("🚀 Post now", "📊 Status", "❓ Help")]],
                  "resize_keyboard": True, "is_persistent": True, "input_field_placeholder": "Tap a button or type /"}
 HELP = """🤖 Ra'ij bot
 
@@ -59,6 +63,8 @@ Make videos:
 Review cards: ✅ Approve · ❌ Reject · ✏️ Edit script (reply to the prompt with what to change) · 🔁 New b-roll · 🎙 Re-voice.
 
 /queue — cards in review and approved videos not yet out, per platform
+/post_now — post every approved video to its connected platforms right away (skips the posting windows; asks first).
+  /post_now 31 32 — only those videos
 /status — paused or not, counts by state
 /approve_all, /skip — act on every card in review, after a confirm button
 /pause, /resume — the publishing kill switch
@@ -102,7 +108,7 @@ def retry_keyboard(video_id: int) -> dict:
 
 
 def confirm_keyboard(act: str, upto: int) -> dict:
-    label = "✅ Yes, approve all" if act == "ba" else "❌ Yes, reject all"
+    label = {"ba": "✅ Yes, approve all", "bs": "❌ Yes, reject all", "nw": "🚀 Yes, post now"}.get(act, "Yes")
     return {"inline_keyboard": [[{"text": label, "callback_data": f"{act}:{upto}"},
                                  {"text": "↩️ Cancel", "callback_data": f"bx:{upto}"}]]}
 
@@ -278,11 +284,32 @@ def queue_text(conn: sqlite3.Connection, cfg, missing: dict[str, str | None] | N
         if lines:
             lines.append("")
         lines.append(f"📤 Approved, publishing: {len(approved)}")
+        waiting = 0
         for v in approved:
-            lines.append(f"#{v['id']} · approved {age_text(v['approved_at'], now)} ago")
+            rushed = bool((json.loads(v.get("notes") or "{}") or {}).get("post_now"))
+            lines.append(f"#{v['id']} · approved {age_text(v['approved_at'], now)} ago" + (" · 🚀 now" if rushed else ""))
             lines.append(title_of(v))
             lines.append(platform_state(conn, cfg, v, missing or {}))
+            if not rushed and not windows.started(conn, v["id"]):
+                waiting += 1
+        if waiting and windows.enabled(cfg):
+            lines.append("")
+            lines.append(f"🕒 {waiting} wait for a posting window — {window_text(cfg, conn)}. /post_now skips the wait.")
     return "\n".join(lines)
+
+
+def window_text(cfg, conn: sqlite3.Connection, now: datetime | None = None) -> str:
+    """'13:00 Asia/Riyadh open, 1 of 1 used; next 18:00' for /queue and /status."""
+    tz = str(cfg.get("publish.windows.timezone") or cfg.get("schedule.timezone") or "UTC")
+    zone = ZoneInfo(tz)
+    cur = windows.current(cfg, now)
+    nxt = windows.next_start(cfg, now)
+    cap = windows.per_window(cfg)
+    nxt_s = f"next opens {nxt.astimezone(zone):%H:%M} {tz}" if nxt else "none configured"
+    if cur is None:
+        return nxt_s
+    used = windows.used(conn, cur)
+    return f"{cur.label} {tz} open ({used} of {cap} used); {nxt_s}"
 
 
 def status_text(conn: sqlite3.Connection, paused: bool) -> str:

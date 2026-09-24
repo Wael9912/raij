@@ -824,3 +824,27 @@ def test_cards_show_format_and_long_duration():
            "beats": "[]", "kind": "long", "source": "manual", "rank_reason": ""}
     cap = cards.caption(ctx)
     assert cap.startswith("🎬 #9 · 4:10 · أرقام تهمك · 🎬 Long") and "✍️ Your request" in cap
+
+
+def test_jobs_finished_child_is_not_alive(env):
+    """A finished child the bot hasn't reaped is a zombie: kill(pid, 0) still succeeds, so `alive` must ask the
+    Popen object — otherwise the queue stays blocked on a long-finished job (seen live 2026-09-24)."""
+    import subprocess
+    import sys
+    import time as _time
+    cfg, conn, _ = env
+    import os
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    jobs._procs[proc.pid] = proc
+    deadline = _time.time() + 10
+    while _time.time() < deadline and not jobs._zombie(proc.pid):   # wait for exit WITHOUT reaping (zombie)
+        _time.sleep(0.05)
+    assert jobs._zombie(proc.pid)
+    os.kill(proc.pid, 0)                                        # a zombie still answers kill 0 — the old check
+    cur = {"name": "trending", "pid": proc.pid, "started": 1}
+    assert not jobs.alive(cur)
+    db.set_flag(conn, jobs.CURRENT_KEY, json.dumps(cur))
+    ev = jobs.tick(cfg, conn)
+    assert ev["finished"] == "trending" and ev["code"] == 0 and jobs.current(conn) is None
+    assert proc.pid not in jobs._procs
+    assert jobs.request(conn, "publish") and jobs.queue(conn) == ["publish"]

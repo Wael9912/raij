@@ -631,3 +631,41 @@ def test_stale_tap_still_counts(env):
     _handler(cfg, conn, tg).handle(_cb("ap:1"))
     assert conn.execute("SELECT status FROM videos").fetchone()[0] == "approved"
     assert conn.execute("SELECT decision FROM approvals").fetchone()[0] == "approved"
+
+
+def test_post_now_asks_then_marks_and_queues_a_publish(env):
+    """/post_now: confirm tap → videos.notes.post_now on the approved videos that still have a connected
+    platform to post, and a `publish` job queued (the bot's maintenance pass starts it)."""
+    from src import jobs
+    cfg, conn, _ = env
+    _rendered(cfg, conn, status="approved")
+    conn.execute("INSERT INTO approvals (video_id, decision) VALUES (1, 'approved')")
+    conn.execute("INSERT INTO videos (script_id, video_path, duration_s, status) "
+                 "VALUES (1, 'assets/generated/video/1.mp4', 47, 'approved')")
+    conn.execute("INSERT INTO approvals (video_id, decision) VALUES (2, 'approved')")
+    conn.execute("INSERT INTO videos (script_id, video_path, duration_s, status) "
+                 "VALUES (1, 'assets/generated/video/1.mp4', 47, 'in_review')")
+    conn.commit()
+    tg = FakeTelegram()
+    h = _handler(cfg, conn, tg)
+    h.handle(_msg("/post_now"))
+    ask = tg.calls[-1][1]
+    assert ask["text"].startswith("🚀 Post 2 videos now to ") and "#1 → " in ask["text"] and "#2 → " in ask["text"]
+    assert "YouTube" in ask["text"] and "Instagram" not in ask["text"].split("🔑")[0]     # Meta keys unset → skipped
+    assert ask["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "nw:2"
+    assert json.loads(conn.execute("SELECT notes FROM videos WHERE id = 1").fetchone()[0] or "{}").get("post_now") is None
+    h.handle(_cb("bx:2"))
+    assert "Cancelled" in tg.calls[-1][1]["text"] and db.get_flag(conn, "post_now_ask") == "null"
+    h.handle(_msg("/post_now 2"))                              # only #2
+    assert tg.calls[-1][1]["text"].startswith("🚀 Post 1 video now")
+    h.handle(_cb("nw:2"))
+    notes = {r[0]: json.loads(r[1] or "{}") for r in conn.execute("SELECT id, notes FROM videos")}
+    assert notes[2].get("post_now", {}).get("by") == CHAT and "post_now" not in notes[1] and "post_now" not in notes[3]
+    assert jobs.queue(conn) == ["publish"]
+    assert tg.calls[-1][1]["text"].startswith("🚀 Posting #2 now → ")
+    h.handle(_msg("🚀 Post now"))                              # the button bar label works too
+    h.handle(_cb("nw:2", cid="cb9"))                           # confirms whatever is left: #1 (#2 already rushed but not out)
+    assert json.loads(conn.execute("SELECT notes FROM videos WHERE id = 1").fetchone()[0])["post_now"]
+    db.set_flag(conn, "publishing_paused", "1")
+    h.handle(_msg("/post_now"))
+    assert "paused" in tg.calls[-1][1]["text"]

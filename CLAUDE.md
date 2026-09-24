@@ -21,6 +21,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 9 Analytics + runner | ✅ done | `096c920` | live: YouTube metrics for 3 Shorts, weekly report sent; launchd bot/daily/publish installed and running. IG/FB insights mock-only |
 | 13 Pick + produce from the bot | ✅ done | (this commit) | `/trending` pick list → format + platforms → `produce` job; `/topic`, `/script`, `/run`, `/jobs`; Wikipedia top-views source; manual picks outside the daily quota |
 | 15 Long-form | ✅ done | (this commit) | `long` format: 1920×1080, 2–5 min, chapters (cards + YouTube timestamps), thumbnail, calmer voice; live: #30 «gold» 3 min from a /topic. `ranking.long_top_n` = 1 automatic long/day |
+| 13b Post now | ✅ done | (2026-09-24) | audit "approved videos never all post": windows allow 4/day vs ~9 made/day + Meta keys missing + zombie job blocked the bot queue. `/post_now [ids]` (confirm tap) → `videos.notes.post_now` → `publish` job; `publish --now`; `publish.windows.per_window`; zombie-safe `jobs.alive` |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
 Missing: YouTube API key (discovery), Reddit, Groq, Pixabay, Meta. YouTube OAuth ✅ (`data/youtube.token.json`; re-auth
@@ -280,6 +281,18 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
     queue. Not taken (yet): libass karaoke captions (no libass here), CC-BY music pools (needs credits + the owner's
     pick), Gemini TTS as an alternate voice (free tier exists; owner chose no fallback voice), tashkeel for TTS,
     upload-post.com for TikTok (TikTok's direct API stays private-only until audited).
+
+- **Post now (2026-09-24, owner's ask "approved vids never all post"):** the posting windows (4/day × `per_window` 1)
+  can't drain ~9 approved/day, and `max_age_hours` 72 then expires the rest; Meta keys are still missing (IG/FB
+  never post, videos stay `approved` until finalize). Controls: **`/post_now`** (button bar 🚀 Post now; optional ids
+  `/post_now 31 32`) lists approved videos with a connected platform still to post, confirm `nw:<max id>` →
+  `runner.rush()` writes `videos.notes.post_now = {at, by}` and queues a `publish` job (`jobs.ALLOWED` now includes
+  `publish`; `main.JOBS` too). A rushed video ignores the window gate and **doesn't use the window's slot**
+  (`windows.used()` excludes `post_now` videos via `json_extract`). CLI: `publish --now` rushes every eligible video.
+  `publish.windows.per_window` (default 1) raises the scheduled throughput. `/queue` ends with the window state
+  (`cards.window_text`) and the /post_now hint. **Bug fixed:** `jobs.alive()` used `kill(pid, 0)`, which succeeds for
+  a zombie child, so a finished `/trending` job (pid 22950, 17:26→) looked "running" for 6.5 h and blocked every
+  queued `produce`/`run-daily`; it now asks the Popen (`poll`) and probes `ps` for foreign pids.
 
 ## Next up
 

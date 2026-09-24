@@ -73,14 +73,30 @@ def next_start(cfg: Config, now: datetime | None = None) -> datetime | None:
     return min(later) if later else None
 
 
-def taken(conn: sqlite3.Connection, window: Window) -> bool:
-    """True once some video's *first* successful post happened inside this window."""
+def per_window(cfg: Config) -> int:
+    """How many videos one window may start (`publish.windows.per_window`, default 1)."""
+    try:
+        return max(1, int(cfg.get("publish.windows.per_window", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def used(conn: sqlite3.Connection, window: Window) -> int:
+    """How many videos had their *first* successful post inside this window. Videos the owner rushed out with
+    /post_now (`videos.notes.post_now`) don't count — they must not eat the scheduled slot."""
     since = window.start.strftime("%Y-%m-%d %H:%M:%S")
     row = conn.execute(
-        "SELECT count(*) FROM (SELECT video_id, min(published_at) AS first FROM posts "
-        "WHERE status IN ('published', 'exported') AND published_at IS NOT NULL GROUP BY video_id) "
+        "SELECT count(*) FROM (SELECT p.video_id, min(p.published_at) AS first FROM posts p "
+        "JOIN videos v ON v.id = p.video_id "
+        "WHERE p.status IN ('published', 'exported') AND p.published_at IS NOT NULL "
+        "AND json_extract(coalesce(v.notes, '{}'), '$.post_now') IS NULL GROUP BY p.video_id) "
         "WHERE first >= ?", (since,)).fetchone()
-    return bool(row[0])
+    return int(row[0])
+
+
+def taken(conn: sqlite3.Connection, window: Window, capacity: int = 1) -> bool:
+    """True once this window started as many videos as it may (`per_window`)."""
+    return used(conn, window) >= max(1, int(capacity))
 
 
 def started(conn: sqlite3.Connection, video_id: int) -> bool:

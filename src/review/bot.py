@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -140,7 +141,11 @@ class Handler:
                 self._retry(vid, user, msg_id)
             elif act == "bx":
                 self._soft(self.bot.edit_markup, self.chat, msg_id, None)
+                db.set_flag(self.conn, "post_now_ask", "null")
                 self.bot.send_message(self.chat, "↩️ Cancelled — nothing changed.")
+            elif act == "nw":
+                self._soft(self.bot.edit_markup, self.chat, msg_id, None)
+                self._post_now(vid, user)
             else:
                 self._soft(self.bot.edit_markup, self.chat, msg_id, None)
                 self._bulk("approved" if act == "ba" else "rejected", vid, user)
@@ -237,6 +242,8 @@ class Handler:
             self.bot.send_message(self.chat, cards.HELP)
         elif cmd in ("/approve_all", "/skip"):
             self._ask_bulk("ba" if cmd == "/approve_all" else "bs")
+        elif cmd == "/post_now":
+            self._ask_post_now(arg)
         elif cmd == "/report":
             from src.analytics.runner import send_weekly
             self._soft(send_weekly, self.cfg, self.conn, self.bot, False)     # no backup on demand (U7)
@@ -432,6 +439,72 @@ class Handler:
         mark = "✅ Approved" if decision == "approved" else "❌ Rejected"
         self.bot.send_message(self.chat, f"{mark} {len(review)} card{'s' if len(review) != 1 else ''}: "
                                          + ", ".join(f"#{v['id']}" for v in review))
+
+    # -- post now (owner's ask 2026-09-24: approved videos sat for days behind the posting windows) ----
+    def _post_now_candidates(self, ids: set[int] | None = None) -> list[dict[str, Any]]:
+        """Approved videos with at least one connected platform still to post (rushed ones included: the owner
+        may ask again if a pass hasn't run yet)."""
+        from src.publish.runner import DONE, wanted_platforms
+        missing = self._missing()
+        out = []
+        for v in cards._rows(self.conn, ("approved",)):
+            if ids is not None and v["id"] not in ids:
+                continue
+            posts = {r["platform"]: dict(r) for r in
+                     self.conn.execute("SELECT platform, status FROM posts WHERE video_id = ?", (v["id"],))}
+            todo = [p for p in wanted_platforms(self.cfg, v) if not missing.get(p)
+                    and posts.get(p, {}).get("status") not in DONE]
+            if todo:
+                out.append({**v, "todo": todo})
+        return out
+
+    def _ask_post_now(self, arg: str) -> None:
+        ids = {int(t) for t in re.findall(r"\d+", arg or "")} or None
+        if db.publishing_paused(self.conn):
+            self.bot.send_message(self.chat, "⏸ Publishing is paused — /resume first, then /post_now.")
+            return
+        rows = self._post_now_candidates(ids)
+        if not rows:
+            what = "Those videos aren't" if ids else "No approved video is"
+            self.bot.send_message(self.chat, f"📭 {what} waiting to post. /queue shows the state.")
+            return
+        names = sorted({cards.PLATFORM.get(p, p) for v in rows for p in v["todo"]})
+        n = len(rows)
+        lines = [f"🚀 Post {n} video{'s' if n != 1 else ''} now to {', '.join(names)}? "
+                 f"This skips the posting windows."]
+        for v in rows:
+            lines += [f"#{v['id']} → " + ", ".join(cards.PLATFORM.get(p, p) for p in v["todo"]), cards.title_of(v)]
+        off = [cards.PLATFORM.get(p, p) for p, why in self._missing().items() if why
+               and any(p in (self._wanted(v)) for v in rows)]
+        if off:
+            lines.append(f"🔑 Not connected (skipped): {', '.join(sorted(set(off)))}")
+        upto = rows[-1]["id"]
+        db.set_flag(self.conn, "post_now_ask", json.dumps({"ids": [v["id"] for v in rows], "upto": upto,
+                                                           "at": time.time()}))
+        self.bot.send_message(self.chat, "\n".join(lines), reply_markup=cards.confirm_keyboard("nw", upto))
+
+    def _wanted(self, v: dict[str, Any]) -> list[str]:
+        from src.publish.runner import wanted_platforms
+        return wanted_platforms(self.cfg, v)
+
+    def _post_now(self, upto: int, user: str) -> None:
+        from src.publish.runner import rush
+        try:
+            ask = json.loads(db.get_flag(self.conn, "post_now_ask") or "null") or {}
+        except ValueError:
+            ask = {}
+        db.set_flag(self.conn, "post_now_ask", "null")
+        ids = set(ask.get("ids") or []) if ask.get("upto") == upto else None
+        rows = [v for v in self._post_now_candidates(ids) if v["id"] <= upto]
+        marked = rush(self.conn, [v["id"] for v in rows], by=user)
+        if not marked:
+            self.bot.send_message(self.chat, "📭 Nothing left to post — no change.")
+            return
+        queued = jobs.request(self.conn, "publish")
+        names = sorted({cards.PLATFORM.get(p, p) for v in rows for p in v["todo"]})
+        self.bot.send_message(self.chat, f"🚀 Posting {', '.join(f'#{i}' for i in marked)} now → {', '.join(names)}."
+                                         + ("" if queued else " A publish pass is already running; the next one takes them.")
+                                         + "\nYou'll get a message per upload as it goes out.")
 
     # -- retry a final publish failure (U9) ----------------------------------------------
     def _retry(self, vid: int, user: str, msg_id: int | None) -> None:

@@ -185,7 +185,8 @@ publish:
   windows:
     timezone: Asia/Riyadh          # Gulf-first (D2)
     times: ["08:00", "13:00", "18:00", "21:00"]
-    open_minutes: 150              # a window accepts one video this long after its start
+    open_minutes: 150              # a window accepts videos this long after its start
+    per_window: 1                  # videos a window may start (4 windows × 1 = 4 videos/day; /post_now skips windows)
   youtube_privacy: public          # public | unlisted | private
   # Platforms that take a `long` video (Reels/Shorts APIs cap at 60–90 s); TikTok is a file export anyway.
   long_platforms: [youtube, tiktok_export]

@@ -25,7 +25,7 @@ from src.config import Config
 
 log = logging.getLogger("raij.jobs")
 
-ALLOWED = ("trending", "produce", "run-daily")
+ALLOWED = ("trending", "produce", "run-daily", "publish")
 QUEUE_KEY = "job_queue"
 CURRENT_KEY = "job_current"
 _procs: dict[int, subprocess.Popen] = {}          # this process's children, to read exit codes
@@ -61,13 +61,31 @@ def current(conn: sqlite3.Connection) -> dict[str, Any] | None:
 
 
 def alive(cur: dict[str, Any] | None) -> bool:
+    """Is the recorded job still running? Our own child is asked directly (`poll`): a finished child that hasn't
+    been reaped is a zombie, and `kill(pid, 0)` still succeeds for a zombie — that kept the queue blocked on a
+    long-finished `trending` for hours (2026-09-24). A pid that isn't our child is probed with kill + ps."""
     if not cur or not cur.get("pid"):
         return False
     try:
-        os.kill(int(cur["pid"]), 0)
-    except (OSError, ValueError):
+        pid = int(cur["pid"])
+    except (TypeError, ValueError):
         return False
-    return True
+    proc = _procs.get(pid)
+    if proc is not None:
+        return proc.poll() is None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return not _zombie(pid)
+
+
+def _zombie(pid: int) -> bool:
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.stdout.strip().startswith("Z")
 
 
 def _python() -> list[str]:
@@ -99,7 +117,7 @@ def tick(cfg: Config, conn: sqlite3.Connection) -> dict[str, Any] | None:
         code = None
         proc = _procs.pop(int(cur["pid"]), None)
         if proc is not None:
-            code = proc.poll()
+            code = proc.wait(timeout=5) if proc.poll() is None else proc.returncode      # reap the child
         db.set_flag(conn, CURRENT_KEY, "null")
         return {"finished": cur["name"], "code": code, "seconds": time.time() - float(cur.get("started") or time.time())}
     q = queue(conn)

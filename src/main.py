@@ -95,7 +95,7 @@ def cmd_bot(cfg, conn, args) -> int:
 
 def cmd_publish(cfg, conn, args) -> int:
     from src.publish.runner import publish
-    return publish(cfg, conn, dry_run=args.dry_run)
+    return publish(cfg, conn, dry_run=args.dry_run, now=bool(getattr(args, "now", False)))
 
 
 def cmd_youtube_auth(cfg, conn, args) -> int:
@@ -385,7 +385,7 @@ def cmd_run_daily(cfg, conn, args) -> int:
 
 
 # Jobs the bot can queue (src/jobs.py) — run inline by `tick` on GitHub Actions.
-JOBS = {"trending": cmd_trending, "produce": cmd_produce, "run-daily": cmd_run_daily}
+JOBS = {"trending": cmd_trending, "produce": cmd_produce, "run-daily": cmd_run_daily, "publish": cmd_publish}
 
 
 def log_hint() -> str:
@@ -442,6 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_, description=help_)
         p.add_argument("--dry-run", action="store_true", help="Show what would happen; no side effects")
         p.set_defaults(func=func)
+        if name == "publish":
+            p.add_argument("--now", action="store_true",
+                           help="Ignore the posting windows: post every approved video to its connected platforms now")
         if name == "discover":
             p.add_argument("--source", action="append", choices=["youtube", "reddit", "trends", "wiki", "rss"],
                            help="Only run this source (repeatable)")

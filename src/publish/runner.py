@@ -9,7 +9,9 @@ ticks in a row can't burn every attempt during one 30-minute outage (A8).
 Published/exported posts are never redone. A platform without keys is skipped (no row), so adding keys
 later picks up approved videos — unless they're older than publish.max_age_hours (trends go stale).
 Posting windows (Phase 12, `publish.windows`): a video's *first* upload waits for an open window and each window
-takes one video (oldest approval first); a video already partly out finishes its platforms whenever due.
+takes `per_window` videos (default 1, oldest approval first); a video already partly out finishes its platforms
+whenever due. The owner can skip the windows: `/post_now` in the bot sets `videos.notes.post_now` (those videos go
+out on the next pass and don't use up a window slot), and `publish --now` rushes every eligible video.
 When every platform is done, the video becomes 'published'. An approved video older than max_age_hours
 is closed (`finalize`): 'published' if anything went out (skipped platforms noted), else 'expired' — so
 missing keys or dead retries can't keep it, and its media, in the state bundle forever (A3).
@@ -79,6 +81,29 @@ def wanted_platforms(cfg: Config, video: dict[str, Any], known: dict | None = No
     return [p for p in want if p in known]
 
 
+def rushed(video: dict[str, Any]) -> bool:
+    """The owner asked for this video to go out now (`/post_now`): the posting windows don't apply to it."""
+    try:
+        return bool((json.loads(video.get("notes") or "{}") or {}).get("post_now"))
+    except (TypeError, ValueError):
+        return False
+
+
+def rush(conn: sqlite3.Connection, video_ids: list[int], by: str = "owner") -> list[int]:
+    """Mark approved videos to be published on the next pass regardless of the posting windows."""
+    marked = []
+    for vid in video_ids:
+        row = conn.execute("SELECT notes FROM videos WHERE id = ? AND status = 'approved'", (vid,)).fetchone()
+        if row is None:
+            continue
+        notes = json.loads(row["notes"] or "{}") or {}
+        notes["post_now"] = {"at": _now(), "by": by}
+        conn.execute("UPDATE videos SET notes = ? WHERE id = ?", (json.dumps(notes, ensure_ascii=False), vid))
+        marked.append(vid)
+    conn.commit()
+    return marked
+
+
 def _post(conn: sqlite3.Connection, video: dict[str, Any], platform: str) -> dict[str, Any]:
     conn.execute("INSERT OR IGNORE INTO posts (video_id, approval_id, platform) VALUES (?, ?, ?)",
                  (video["id"], video["approval_id"], platform))
@@ -128,20 +153,21 @@ def _link(name: str, res: Posted) -> str:
 
 
 def publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,
-            platforms: dict | None = None, bot=None) -> int:
-    """One publisher at a time across processes (scheduled job + run-daily), so nothing uploads twice."""
+            platforms: dict | None = None, bot=None, now: bool = False) -> int:
+    """One publisher at a time across processes (scheduled job + run-daily), so nothing uploads twice.
+    `now=True` (`publish --now`) ignores the posting windows for every eligible video."""
     if dry_run:
-        return _publish(cfg, conn, True, client, platforms, bot)
+        return _publish(cfg, conn, True, client, platforms, bot, now)
     try:
         with single(cfg.root, "publish"):
-            return _publish(cfg, conn, False, client, platforms, bot)
+            return _publish(cfg, conn, False, client, platforms, bot, now)
     except Busy as exc:
         log.info("Publish skipped: %s", exc)
         return 0
 
 
 def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx.Client | None,
-             platforms: dict | None, bot) -> int:
+             platforms: dict | None, bot, now: bool = False) -> int:
     platforms = platforms or PLATFORMS
     max_attempts = int(cfg.get("publish.max_attempts", 3))
     backoff = [float(h) for h in cfg.get("publish.retry_after_hours", [1, 6, 24])]
@@ -154,13 +180,18 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
             _notify(cfg, [f"⏸ Publishing is paused — {len(videos)} approved video(s) waiting."], bot)
             db.set_flag(conn, "paused_notice_sent", "1")
         return 0
-    gated = windows.enabled(cfg)
+    gated = windows.enabled(cfg) and not now
     window = windows.current(cfg) if gated else None
-    slot_taken = bool(window and windows.taken(conn, window))
+    capacity = windows.per_window(cfg)
+    slots_used = windows.used(conn, window) if window else 0
+    slot_taken = bool(window and slots_used >= capacity)
     if dry_run:
-        log.info("[dry run] %d approved video(s) to publish", len(videos))
+        log.info("[dry run] %d approved video(s) to publish%s", len(videos), " — windows ignored (--now)" if now else "")
         if gated:
             log.info("[dry run] posting window: %s", _window_text(cfg, window, slot_taken))
+        for v in videos:
+            if rushed(v):
+                log.info("[dry run] video %d is marked post_now — windows ignored for it", v["id"])
         for name, why in missing.items():
             log.info("[dry run] %s: %s", name, f"skipped — {why}" if why else "ready")
         for v in videos:
@@ -179,7 +210,8 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
     client = client or make_client()
     try:
         for v in videos:
-            if gated and not windows.started(conn, v["id"]):
+            hurry = rushed(v)
+            if gated and not hurry and not windows.started(conn, v["id"]):
                 if window is None or slot_taken:
                     waiting += 1
                     continue
@@ -222,8 +254,10 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                              (res.status, res.external_id, res.url, post["id"]))
                 conn.commit()
                 done.append({"video_id": v["id"], "platform": name, "url": res.url})
-                if gated and first:
-                    slot_taken = True                        # this window's one video went out
+                if gated and first and not hurry:
+                    first = False
+                    slots_used += 1                          # a rushed video doesn't use the window's slot
+                    slot_taken = slots_used >= capacity
                 notices.append(f"{'📲' if res.status == 'exported' else '✅'} {_label(v)}\n"
                                f"{PLATFORM_NAME.get(name, name)}: {_link(name, res)}")
                 log.info("Video %d → %s %s: %s", v["id"], name, res.status, res.url)

@@ -485,3 +485,47 @@ def test_config_locks_the_niche_and_gulf_market(env):
     assert all(cat in youtube.CATEGORY_IDS for cat in cfg.get("ranking.categories"))
     feeds = cfg.get("discovery.rss.feeds")
     assert sum(1 for f in feeds if f["region"] == "SA") >= 5 and len(feeds) == len({f["url"] for f in feeds})
+
+
+def test_post_now_skips_the_window_and_keeps_the_slot_free(env):
+    """Owner's ask (2026-09-24): a rushed video goes out with no window open, and it doesn't use up the
+    scheduled slot — the next window still takes the oldest waiting video."""
+    cfg, conn, _ = env
+    cfg.brands[0]["platforms"] = ["youtube"]
+    for vid in (1, 2, 3):
+        _approved(cfg, conn, vid)
+    yt = Fake()
+    plats = {"youtube": (yt.missing, yt)}
+    quiet = type("B", (), {"send_message": lambda self, chat, text, **kw: None})()
+    _set_windows(cfg, ["00:00"], minutes=1)
+    if windows.current(cfg):
+        _set_windows(cfg, ["12:00"], minutes=1)
+    assert runner.rush(conn, [3, 99]) == [3]                     # 99 doesn't exist
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=quiet) == 0
+    assert yt.calls == [3]                                       # no window open, only the rushed one went
+    assert dict(conn.execute("SELECT id, status FROM videos")) == {1: "approved", 2: "approved", 3: "published"}
+    _open_now(cfg)
+    assert windows.used(conn, windows.current(cfg)) == 0         # the rushed video isn't the window's video
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=quiet) == 0
+    assert yt.calls == [3, 1]
+    # `publish --now` rushes everything that's left.
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=quiet, now=True) == 0
+    assert yt.calls == [3, 1, 2]
+
+
+def test_per_window_capacity(env):
+    cfg, conn, _ = env
+    cfg.brands[0]["platforms"] = ["youtube"]
+    for vid in (1, 2, 3):
+        _approved(cfg, conn, vid)
+    yt = Fake()
+    plats = {"youtube": (yt.missing, yt)}
+    quiet = type("B", (), {"send_message": lambda self, chat, text, **kw: None})()
+    _open_now(cfg)
+    cfg.data["publish"]["windows"]["per_window"] = 2
+    assert windows.per_window(cfg) == 2
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=quiet) == 0
+    assert yt.calls == [1, 2]
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=quiet) == 0
+    assert yt.calls == [1, 2]                                    # window full
+    assert windows.taken(conn, windows.current(cfg), 2) and not windows.taken(conn, windows.current(cfg), 3)
