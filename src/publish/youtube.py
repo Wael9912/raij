@@ -23,7 +23,7 @@ import httpx
 
 from src.config import Config
 from src.discover.common import FetchError, request
-from src.publish.common import Posted, PostText, PublishError, PublishSkipped, chapter_lines
+from src.publish.common import QuotaExhausted, Posted, PostText, PublishError, PublishSkipped, chapter_lines
 
 log = logging.getLogger("raij.publish")
 
@@ -183,9 +183,12 @@ def metadata(cfg: Config, text: PostText) -> dict:
     }
 
 
-def existing(client: httpx.Client, auth: dict, title: str, days: int = 7) -> str | None:
-    """Id of a recent upload on the channel with exactly this title, if any (2 quota units). Guards against a
-    second upload when the state saved after the first one was lost (cache save failed, stale bootstrap)."""
+def existing(client: httpx.Client, auth: dict, title: str, days: int = 7, kind: str = "short") -> str | None:
+    """Id of a recent upload on the channel with exactly this title *and the same format*, if any (2 quota units).
+    Guards against a second upload when the state saved after the first one was lost (cache save failed, stale
+    bootstrap). Format matters: the Short and the long video of one story share the hook title (live 2026-09-24:
+    long #36 "adopted" Short #35's id and was never uploaded) — a Short's description ends with "#Shorts", a long
+    video's carries chapter timestamps instead, so that marker tells them apart."""
     from datetime import datetime, timedelta, timezone
     try:
         ch = request(client, "GET", f"{API_URI}/channels?part=contentDetails&mine=true", headers=auth).json()
@@ -196,17 +199,39 @@ def existing(client: httpx.Client, auth: dict, title: str, days: int = 7) -> str
         log.warning("Couldn't list recent YouTube uploads (%s) — uploading without the duplicate check", exc)
         return None
     since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    want_short = str(kind or "short") != "long"
     for it in items:
         s = it.get("snippet") or {}
-        if s.get("title") == title and (s.get("publishedAt") or "") >= since:
+        is_short = "#Shorts" in str(s.get("description") or "")
+        if s.get("title") == title and (s.get("publishedAt") or "") >= since and is_short == want_short:
             return (s.get("resourceId") or {}).get("videoId")
     return None
 
 
+QUOTA_NOTE = ("YouTube's daily limit is reached (API quota, or the channel's uploads per 24 h — live 2026-09-24 it "
+              "was the upload limit after 10 videos) — every pass retries and the video goes out when YouTube allows")
+
+
+def quota_error(exc: BaseException) -> bool:
+    """Google answers 403 'exceeded your quota' (API units, resets 07:00 UTC) or **400** 'The user has exceeded the
+    number of videos they may upload' (channel upload limit, rolling 24 h); both clear on their own."""
+    msg = str(exc)
+    return ("HTTP 403" in msg or "HTTP 400" in msg) and ("quota" in msg.lower() or "number of videos" in msg)
+
+
 def publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, video_id: int) -> Posted:
+    try:
+        return _publish(cfg, client, video, text, video_id)
+    except FetchError as exc:
+        if quota_error(exc):
+            raise QuotaExhausted(QUOTA_NOTE) from None
+        raise
+
+
+def _publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, video_id: int) -> Posted:
     token = access_token(cfg, client)
     auth = {"Authorization": f"Bearer {token}"}
-    dup = existing(client, auth, metadata(cfg, text)["snippet"]["title"])
+    dup = existing(client, auth, metadata(cfg, text)["snippet"]["title"], kind=text.kind)
     if dup:
         log.warning("Video %d is already on YouTube as %s (same title, last 7 days) — adopting it, not re-uploading",
                     video_id, dup)

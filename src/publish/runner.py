@@ -34,7 +34,7 @@ from src.config import Config
 from src.discover.common import FetchError, make_client
 from src.lock import Busy, single
 from src.publish import meta, tiktok, windows, youtube
-from src.publish.common import Posted, PostText, PublishError, PublishSkipped, post_text
+from src.publish.common import Posted, PostText, PublishError, PublishSkipped, QuotaExhausted, post_text
 
 log = logging.getLogger("raij.publish")
 
@@ -205,6 +205,7 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
     # (keeps idle GitHub Actions ticks from re-saving the state).
     run_id = None
     done, failed, skipped, notices, retries = [], [], set(), [], []
+    exhausted: dict[str, str] = {}                           # platform → why (daily quota); rest of the pass skips it
     waiting = 0
     own_client = client is None
     client = client or make_client()
@@ -223,6 +224,8 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                 if missing[name]:
                     skipped.add(name)
                     continue
+                if name in exhausted:
+                    continue
                 post = _post(conn, v, name)
                 if post["status"] in DONE or post["attempts"] >= max_attempts:
                     continue
@@ -237,6 +240,14 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                 conn.commit()
                 try:
                     res = platforms[name][1](cfg, client, path, text, v["id"])
+                except QuotaExhausted as exc:
+                    # Not this video's failure: give the attempt back and leave the post queued for the next pass.
+                    conn.execute("UPDATE posts SET attempts = attempts - 1, last_attempt_at = ?, status = 'queued', "
+                                 "error = ? WHERE id = ?", (post["last_attempt_at"], str(exc)[:500], post["id"]))
+                    conn.commit()
+                    exhausted[name] = str(exc)
+                    log.warning("Video %d → %s: %s", v["id"], name, exc)
+                    continue
                 except (PublishError, PublishSkipped, FetchError, OSError, ValueError, KeyError) as exc:
                     msg = f"{type(exc).__name__}: {exc}"[:500]
                     conn.execute("UPDATE posts SET status = 'failed', error = ? WHERE id = ?", (msg, post["id"]))
@@ -248,6 +259,18 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
                     if last:
                         retries.append((v["id"], f"⚠️ {_label(v)}\n{PLATFORM_NAME.get(name, name)} failed "
                                                  f"{max_attempts}× — giving up.\n{msg[:200]}"))
+                    continue
+                other = conn.execute("SELECT video_id FROM posts WHERE platform = ? AND external_id = ? "
+                                     "AND video_id != ? AND status IN ('published', 'exported')",
+                                     (name, res.external_id, v["id"])).fetchone() if res.external_id else None
+                if other:
+                    # The platform handed back an id that already belongs to another of our videos (a duplicate
+                    # check adopting the wrong upload): that's a failure of this post, not a publish.
+                    msg = f"{name} returned {res.external_id}, already video #{other[0]}'s — not adopted"
+                    conn.execute("UPDATE posts SET status = 'failed', error = ? WHERE id = ?", (msg, post["id"]))
+                    conn.commit()
+                    log.warning("Video %d → %s: %s", v["id"], name, msg)
+                    failed.append({"video_id": v["id"], "platform": name, "error": msg, "final": False})
                     continue
                 conn.execute("UPDATE posts SET status = ?, external_id = ?, url = ?, error = NULL, "
                              "published_at = datetime('now') WHERE id = ?",
@@ -272,6 +295,13 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
 
     for name in sorted(skipped):
         log.info("%s skipped: %s", name, missing[name])
+    for name, why in exhausted.items():
+        left = conn.execute("SELECT count(*) FROM posts p JOIN videos v ON v.id = p.video_id WHERE p.platform = ? "
+                            "AND p.status = 'queued' AND v.status = 'approved'", (name,)).fetchone()[0]
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if db.get_flag(conn, f"quota_notice_{name}") != today:        # one Telegram line per platform per day
+            notices.append(f"⏳ {PLATFORM_NAME.get(name, name)}: {why}. {left} video(s) will follow automatically.")
+            db.set_flag(conn, f"quota_notice_{name}", today)
     if waiting:
         log.info("%d approved video(s) wait for a posting window — %s", waiting, _window_text(cfg, window, slot_taken))
     closed = finalize(cfg, conn, cfg.get("publish.max_age_hours", 72), platforms=platforms)

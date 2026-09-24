@@ -368,14 +368,23 @@ def test_youtube_adopts_a_recent_upload_with_the_same_title(env, monkeypatch):
             return httpx.Response(200, json={"items": [
                 {"snippet": {"title": "عطل مفاجئ يضرب ميتا", "publishedAt": "2020-01-01T00:00:00Z",
                              "resourceId": {"videoId": "old"}}},
-                {"snippet": {"title": "عطل مفاجئ يضرب ميتا", "publishedAt": recent,
+                {"snippet": {"title": "عطل مفاجئ يضرب ميتا", "publishedAt": recent, "description": "x\n\n#Shorts",
                              "resourceId": {"videoId": "dup1"}}}]})
         uploads.append(req.method)
-        return httpx.Response(500)
+        if req.method == "POST":
+            return httpx.Response(200, headers={"Location": "https://upload.example/s"})
+        return httpx.Response(200, json={"id": "newlong"})
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
     posted = youtube.publish(cfg, client, tmp / "assets/generated/video/1.mp4", post_text(runner.eligible(conn)[0]), 1)
     assert posted.external_id == "dup1" and uploads == []
+    # The long video of the same story shares the title but is not that Short (live 2026-09-24, #36 vs #35).
+    conn.execute("UPDATE scripts SET kind = 'long'")
+    conn.commit()
+    text = post_text(runner.eligible(conn)[0])
+    assert text.kind == "long"
+    posted = youtube.publish(cfg, client, tmp / "assets/generated/video/1.mp4", text, 1)
+    assert posted.external_id == "newlong" and uploads[0] == "POST"
 
 
 def test_youtube_uploads_when_the_duplicate_check_fails(env, monkeypatch):
@@ -593,3 +602,55 @@ def test_youtube_upload_stalled_by_308s_gives_up(env, monkeypatch):
     (tmp / "assets/generated/video/1.mp4").write_bytes(b"")
     with pytest.raises(PublishError, match="empty"):
         youtube.publish(cfg, client, tmp / "assets/generated/video/1.mp4", post_text(runner.eligible(conn)[0]), 1)
+
+
+def test_youtube_quota_exhaustion_gives_the_attempt_back_and_skips_the_rest(env, monkeypatch):
+    """Owner 2026-09-24 ("no limits"): 10 approved at once exceed YouTube's ~6 uploads/day. A quota 403 must not
+    burn attempts (three passes would give up on the video) and the pass stops trying YouTube; TikTok still goes."""
+    from src.publish.common import QuotaExhausted
+    cfg, conn, tmp = env
+    _brand_platforms(cfg, ["youtube", "tiktok_export"])
+    for vid in (1, 2):
+        _video(cfg, conn, vid=vid)
+    calls = []
+
+    def yt(cfg_, client, path, text, video_id):
+        calls.append(video_id)
+        raise QuotaExhausted(youtube.QUOTA_NOTE)
+    tk = Fake()
+    plats = {"youtube": (lambda c: None, yt), "tiktok_export": (tk.missing, tk)}
+    sent = []
+    quiet = type("B", (), {"send_message": lambda self, chat, text, **kw: sent.append(text)})()
+    assert runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=quiet) == 0
+    assert calls == [1]                                                     # second video not even tried
+    rows = {(r["video_id"], r["platform"]): dict(r) for r in conn.execute("SELECT * FROM posts")}
+    assert rows[(1, "youtube")]["status"] == "queued" and rows[(1, "youtube")]["attempts"] == 0
+    assert rows[(1, "youtube")]["last_attempt_at"] is None and "quota" in rows[(1, "youtube")]["error"]
+    assert (2, "youtube") not in rows                                       # untouched, tries next pass
+    assert rows[(1, "tiktok_export")]["status"] == "published" and rows[(2, "tiktok_export")]["status"] == "published"
+    assert dict(conn.execute("SELECT id, status FROM videos")) == {1: "approved", 2: "approved"}
+    assert any("YouTube's daily limit" in t for t in sent)
+    runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=quiet)
+    assert sum("daily limit" in t for t in sent) == 1                      # notice once per day
+    assert rows[(1, "youtube")]["attempts"] == 0
+    # The detector: Google's two 403 texts, and nothing else.
+    from src.discover.common import FetchError
+    assert youtube.quota_error(FetchError("POST x: HTTP 403 The request cannot be completed because you have exceeded your quota."))
+    assert youtube.quota_error(FetchError("POST x: HTTP 400 The user has exceeded the number of videos they may upload."))
+    assert not youtube.quota_error(FetchError("POST x: HTTP 403 Forbidden")) and not youtube.quota_error(FetchError("HTTP 500 quota"))
+
+
+def test_runner_refuses_an_id_that_belongs_to_another_video(env):
+    """A publisher handing back another video's external id (a duplicate check adopting the wrong upload) is a
+    failed post, retried later — never a second video 'published' at the same link."""
+    cfg, conn, _ = env
+    _brand_platforms(cfg, ["youtube"])
+    _video(cfg, conn, vid=1)
+    _video(cfg, conn, vid=2)
+    same = lambda cfg_, client, path, text, video_id: Posted("SAME", "https://p.example/SAME")   # noqa: E731
+    plats = {"youtube": (lambda c: None, same)}
+    quiet = type("B", (), {"send_message": lambda self, chat, text, **kw: None})()
+    runner.publish(cfg, conn, platforms=plats, client=httpx.Client(), bot=quiet)
+    rows = {r["video_id"]: dict(r) for r in conn.execute("SELECT * FROM posts")}
+    assert rows[1]["status"] == "published" and rows[2]["status"] == "failed" and "already video #1" in rows[2]["error"]
+    assert dict(conn.execute("SELECT id, status FROM videos")) == {1: "published", 2: "approved"}

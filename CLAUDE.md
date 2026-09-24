@@ -294,6 +294,17 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   a zombie child, so a finished `/trending` job (pid 22950, 17:26→) looked "running" for 6.5 h and blocked every
   queued `produce`/`run-daily`; it now asks the Popen (`poll`) and probes `ps` for foreign pids.
 
+- **No limits (owner 2026-09-24 03:00 Cairo, "make posting with no limits"):** `publish.windows.times: []` — approved
+  videos post on the next pass (launchd every 30 min, or a `/post_now` job at once). The first 🚀 Post now run put
+  10 videos out in 7 min (#26, #30–#37, #39; 20 posts, 0 failures, no quota error). Two things it exposed, both
+  fixed: **(1)** YouTube quota — `youtube.quota_error()` (403 "exceeded your quota" / "number of videos") raises
+  `QuotaExhausted`; the runner gives the attempt back (post stays `queued`, attempts −1), skips that platform for
+  the rest of the pass and sends one notice per platform per day (`control.quota_notice_<platform>`). **(2)** The
+  duplicate check adopted the wrong video: long #36 and Short #35 share the hook title, so `existing()` matched
+  #35's Short and #36 was never uploaded. `existing(kind=)` now requires the same format (a Short's description
+  ends with "#Shorts"), and the runner refuses an external id that already belongs to another video (post →
+  `failed`, retried). #36 was reset and re-uploaded. Consider a distinct long title (SEO) later.
+
 ## Next up
 
 **Runs on the owner's Mac (launchd) since 2026-09-23 17:47 Cairo.** GitHub Actions (repo Wael9912/raij) is the

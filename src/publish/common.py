@@ -15,6 +15,11 @@ class PublishError(RuntimeError):
     """The platform refused or failed the post; message is safe to log (no tokens)."""
 
 
+class QuotaExhausted(PublishError):
+    """The platform's daily API quota is used up: not the video's fault, so the attempt isn't counted and the
+    platform is skipped for the rest of the pass (YouTube: 10,000 units/day ≈ 6 uploads, resets 07:00 UTC)."""
+
+
 @dataclass
 class Posted:
     external_id: str
