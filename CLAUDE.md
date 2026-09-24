@@ -312,8 +312,10 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   `status/fetch` until `SEND_TO_USER_INBOX`); the inbox call takes no text, so the caption goes to Telegram and the
   owner pastes it in the app → post `exported`. `direct` mode (`video.publish`, after TikTok's audit) queries
   creator-info and **refuses** when the wanted privacy isn't offered (unaudited apps = SELF_ONLY forever) instead of
-  posting private; `is_aigc` label on. Auth: `tiktok-auth` = Desktop Login Kit, redirect `http://127.0.0.1:8471/callback/`
-  (must be registered exactly; `publish.tiktok.redirect_port`), PKCE with the **hex** SHA-256 challenge; tokens in
+  posting private; `is_aigc` label on. Auth: the portal rejects non-https redirects, so the default is the **Web** flow in two steps:
+  `tiktok-auth` opens consent with `publish.tiktok.redirect_uri` = https://raij.dafatir.workers.dev/tiktok/callback
+  (the page shows `tiktok-auth --code … --state …`; state in `data/tiktok.auth.json`, 15 min); `finish_web` exchanges
+  it. Desktop loopback `http://127.0.0.1:8471/callback/` + hex-SHA-256 PKCE remains when `redirect_uri` is empty; tokens in
   `data/tiktok.token.json` (0600; access 24 h, refresh 365 d and rotating — file rewritten after each refresh;
   `username` kept for status). TikTok's errors are HTTP 200 + `error.code`: limit codes
   (`rate_limit_exceeded`, `spam_risk_too_many_pending_share`, `spam_risk_too_many_posts`, banned) → `QuotaExhausted`

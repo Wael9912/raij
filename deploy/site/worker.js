@@ -78,9 +78,31 @@ YouTube's Terms of Service. Nothing in this tool overrides them.</p>
 <p>These terms and the privacy policy may be updated; the date at the bottom of each page shows the current version.</p>
 <p class="ar">الأداة للاستخدام الشخصي لمالكها فقط، وكل المحتوى يُراجَع قبل النشر ويلتزم بشروط المنصات.</p>`);
 
+const esc = (v) => String(v || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function callback(url) {
+  const q = url.searchParams;
+  const code = q.get("code"), state = q.get("state"), error = q.get("error");
+  if (error) {
+    return page("TikTok: not authorized", `<h1>TikTok did not authorize</h1>
+<p><code>${esc(error)}</code> ${esc(q.get("error_description"))}</p><p>Close this tab and run <code>tiktok-auth</code> again.</p>`);
+  }
+  if (!code) return page("TikTok callback", `<h1>TikTok callback</h1><p>Nothing to do here — this page receives the code after you approve Ra'ij on TikTok.</p>`);
+  const cmd = `uv run python -m src.main tiktok-auth --code "${code}" --state "${state || ""}"`;
+  return page("TikTok: one more step", `<h1>TikTok approved Ra'ij ✅</h1>
+<p>Last step: run this command on the Mac (paste it into the Claude session with a leading <code>!</code>, or into Terminal in the project folder):</p>
+<pre id="cmd" style="white-space:pre-wrap;word-break:break-all;background:#f4f4f4;padding:12px;border-radius:8px">${esc(cmd)}</pre>
+<p><button onclick="navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(()=>{this.textContent='Copied ✓'})">Copy command</button></p>
+<p style="color:#666">The code is single-use and expires in a few minutes. Nothing is stored on this site.</p>`);
+}
+
 export default {
   async fetch(request, env) {
-    const { pathname } = new URL(request.url);
+    const url = new URL(request.url);
+    const { pathname } = url;
+    if (pathname === "/tiktok/callback" || pathname === "/tiktok/callback/") {
+      return new Response(callback(url), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+    }
     const html = (body) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8",
                                                            "cache-control": "public, max-age=3600" } });
     if (pathname === "/" ) return html(HOME);

@@ -140,8 +140,10 @@ and tap Post. After TikTok audits the app, switch `publish.tiktok.mode` to `dire
    (رائج) → *Manage apps* → *Connect an app*. Name "Ra'ij", category e.g. *Entertainment*, description
    "Personal tool: uploads the owner's own Arabic explainer videos to the owner's account", icon = the channel logo,
    Terms of Service URL and Privacy Policy URL from step 1.
-3. **Platform:** add **Desktop** (not Web — Desktop allows the local redirect) with redirect URI exactly
-   `http://127.0.0.1:8471/callback/` (`publish.tiktok.redirect_port`).
+3. **Platform:** add **Web** (the portal only accepts https redirects) with redirect URI exactly
+   `https://raij.dafatir.workers.dev/tiktok/callback` (`publish.tiktok.redirect_uri`; the domain is the verified URL
+   property from step 1). That page just shows the code TikTok sends back and the command to finish.
+   (Desktop with `http://127.0.0.1:8471/callback/` is still supported when `redirect_uri` is empty.)
 4. **Products:** add **Login Kit** and **Content Posting API**. Scopes: `user.info.basic`, `video.upload`; add
    `video.publish` too if you want it covered by the review from the start (direct mode needs it later).
    For Content Posting API answer *FILE_UPLOAD* (no URL property / domain verification needed for uploads from disk).
@@ -152,8 +154,9 @@ and tap Post. After TikTok audits the app, switch `publish.tiktok.mode` to `dire
    TIKTOK_CLIENT_KEY=…
    TIKTOK_CLIENT_SECRET=…
    ```
-   Then `uv run python -m src.main tiktok-auth`: the browser opens TikTok's consent page, you approve, the tokens land
-   in `data/tiktok.token.json` (gitignored, 0600) and the log says `TikTok authorized as @…`. From the next publish
+   Then `uv run python -m src.main tiktok-auth`: the browser opens TikTok's consent page; after you approve, our
+   callback page shows a `tiktok-auth --code … --state …` command — run it within 15 min and the tokens land in
+   `data/tiktok.token.json` (gitignored, 0600); the log says `TikTok authorized as @…`. From the next publish
    pass every approved video goes to your TikTok inbox; the old Telegram copy (`tiktok_export`) steps aside by itself.
 6. **Production keys:** *Submit for review* in the portal (basic app review: description + a short screen recording of
    the login → upload → post flow). When approved, replace the two `.env` values with the production key/secret and

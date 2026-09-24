@@ -61,7 +61,10 @@ class TikTokServer:
             if body.get("grant_type") == ["refresh_token"]:
                 return httpx.Response(200, json={"access_token": "AT2", "expires_in": 86400, "refresh_token": "RT2",
                                                  "refresh_expires_in": 31536000, "open_id": "o1", "scope": "video.upload"})
-            assert body["code_verifier"][0] and body["redirect_uri"][0].startswith("http://127.0.0.1:")
+            if body["redirect_uri"][0].startswith("http://127.0.0.1:"):      # desktop flow carries PKCE
+                assert body["code_verifier"][0]
+            else:
+                assert "code_verifier" not in body
             return httpx.Response(200, json={"access_token": "AT", "expires_in": 86400, "refresh_token": "RT",
                                              "refresh_expires_in": 31536000, "open_id": "o1", "scope": "video.upload"})
         if path.startswith("/v2/user/info/"):
@@ -146,6 +149,7 @@ def test_authorize_desktop_pkce_loopback(env, monkeypatch):
     monkeypatch.setenv("TIKTOK_CLIENT_KEY", "ck")
     monkeypatch.setenv("TIKTOK_CLIENT_SECRET", "cs")
     cfg.data["publish"]["tiktok"]["redirect_port"] = 0                              # any free port in tests
+    cfg.data["publish"]["tiktok"]["redirect_uri"] = ""                              # Desktop loopback flow
     srv = TikTokServer()
 
     def browser(url):
@@ -160,6 +164,39 @@ def test_authorize_desktop_pkce_loopback(env, monkeypatch):
     assert who == "@raij88" and data["refresh_token"] == "RT" and data["username"] == "raij88"
     assert oct(path.stat().st_mode)[-3:] == "600" and data["expires_at"] > time.time() + 80000
     assert tiktok_api.connected(cfg)
+
+
+def test_web_flow_start_then_finish_with_the_callback_command(env, monkeypatch):
+    """Web platform (the portal insists on https): step 1 opens consent + remembers state; step 2 exchanges the
+    code the site's /tiktok/callback page showed. The whole callback URL is accepted too."""
+    cfg, _, tmp = env
+    monkeypatch.setenv("TIKTOK_CLIENT_KEY", "ck")
+    monkeypatch.setenv("TIKTOK_CLIENT_SECRET", "cs")
+    cfg.data["publish"]["tiktok"]["redirect_uri"] = "https://raij.example/tiktok/callback"
+    opened = []
+    url = tiktok_api.start_web(cfg, open_browser=opened.append)
+    q = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
+    assert opened == [url] and q["redirect_uri"] == "https://raij.example/tiktok/callback" and "code_challenge" not in q
+    assert oct(tiktok_api.pending_file(cfg).stat().st_mode)[-3:] == "600"
+    srv = TikTokServer()
+    with pytest.raises(PublishError, match="state mismatch"):
+        tiktok_api.finish_web(cfg, srv.client(), "C0DE", "wrong")
+    path, who = tiktok_api.finish_web(cfg, srv.client(), f"https://raij.example/tiktok/callback?code=C0DE&state={q['state']}")
+    assert who == "@raij88" and json.loads(path.read_text())["refresh_token"] == "RT"
+    assert not tiktok_api.pending_file(cfg).exists() and tiktok_api.connected(cfg)
+    with pytest.raises(PublishError, match="run `uv run python -m src.main tiktok-auth` first"):
+        tiktok_api.finish_web(cfg, srv.client(), "C0DE", q["state"])
+    # Token exchange for the web flow carries no code_verifier.
+    tiktok_api.start_web(cfg, open_browser=lambda u: None)
+
+    def handler(req):
+        if not req.url.path.endswith("/oauth/token/"):                              # the user-info lookup
+            return httpx.Response(200, json={"data": {"user": {}}, "error": {"code": "ok"}})
+        body = parse_qs(req.content.decode())
+        assert "code_verifier" not in body and body["redirect_uri"] == ["https://raij.example/tiktok/callback"]
+        return httpx.Response(200, json={"access_token": "AT", "expires_in": 86400, "refresh_token": "RT", "open_id": "o1"})
+    st = json.loads(tiktok_api.pending_file(cfg).read_text())["state"]
+    tiktok_api.finish_web(cfg, httpx.Client(transport=httpx.MockTransport(handler)), "C0DE", st)
 
 
 def test_access_token_refreshes_and_rotates(env, monkeypatch):

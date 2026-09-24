@@ -8,7 +8,10 @@ Two modes, `publish.tiktok.mode`:
   level the creator-info query allows. Before the audit TikTok forces SELF_ONLY — private forever — so direct mode
   refuses to post when the wanted level isn't offered instead of publishing a private video.
 
-Auth = Login Kit for Desktop: loopback redirect `http://127.0.0.1:<publish.tiktok.redirect_port>/callback/` (must be
+Auth: the portal only accepts **https** redirect URIs (Web platform), so the default flow is two steps —
+`tiktok-auth` opens TikTok's consent page with `publish.tiktok.redirect_uri` (our site's /tiktok/callback, which shows
+the code) and `tiktok-auth --code … --state …` exchanges it; the state is kept in data/tiktok.auth.json for 15 min.
+With `redirect_uri` empty the Desktop flow is used instead: loopback redirect `http://127.0.0.1:<publish.tiktok.redirect_port>/callback/` (must be
 registered as-is in the app) with PKCE — TikTok wants `code_challenge` as the **hex** SHA-256 of the verifier, not
 base64url. Access tokens last 24 h, refresh tokens 365 d and rotate, so `data/tiktok.token.json` (0600) is rewritten
 after every refresh. Client key/secret live in `.env` (`TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`); a sandbox app
@@ -154,6 +157,66 @@ def access_token(cfg: Config, client: httpx.Client) -> str:
 
 
 # --- one-time authorization -------------------------------------------------------
+
+PENDING_TTL = 900
+
+
+def web_redirect(cfg: Config) -> str | None:
+    uri = str(cfg.get("publish.tiktok.redirect_uri") or "").strip()
+    return uri if uri.startswith("https://") else None
+
+
+def pending_file(cfg: Config) -> Path:
+    return cfg.root / "data" / "tiktok.auth.json"
+
+
+def start_web(cfg: Config, open_browser: Callable[[str], object] = webbrowser.open) -> str:
+    """Web platform, step 1: open TikTok's consent page; the state is remembered for `finish_web`."""
+    key, secret = keys(cfg)
+    if not key or not secret:
+        raise PublishError("TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET are not set (SETUP.md §8)")
+    redirect = web_redirect(cfg)
+    if not redirect:
+        raise PublishError("publish.tiktok.redirect_uri is not an https URL")
+    state = secrets.token_urlsafe(16)
+    url = AUTH_URI + "?" + urlencode({"client_key": key, "response_type": "code", "scope": ",".join(scopes(cfg)),
+                                      "redirect_uri": redirect, "state": state})
+    path = pending_file(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"state": state, "redirect": redirect, "at": time.time()}, f)
+    print(f"Open this URL to connect TikTok (it should open by itself); the page you land on shows the command "
+          f"to finish:\n{url}\n", flush=True)
+    open_browser(url)
+    return url
+
+
+def finish_web(cfg: Config, client: httpx.Client, code: str, state: str | None = None) -> tuple[Path, str | None]:
+    """Web platform, step 2: exchange the code the callback page showed (`code` may be the whole callback URL)."""
+    code = (code or "").strip()
+    if code.startswith("http"):
+        q = {k: v[0] for k, v in parse_qs(urlsplit(code).query).items()}
+        code, state = q.get("code", ""), q.get("state", state)
+    if not code:
+        raise PublishError("no code given")
+    path = pending_file(cfg)
+    try:
+        pending = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise PublishError("no authorization in progress — run `uv run python -m src.main tiktok-auth` first") from None
+    if time.time() - float(pending.get("at") or 0) > PENDING_TTL:
+        path.unlink(missing_ok=True)
+        raise PublishError("the authorization started more than 15 min ago — run `tiktok-auth` again")
+    if (state or "") != pending.get("state"):
+        raise PublishError("state mismatch — use the command shown on the callback page, or run `tiktok-auth` again")
+    tok = _token_call(cfg, client, {"grant_type": "authorization_code", "code": code,
+                                    "redirect_uri": str(pending.get("redirect") or web_redirect(cfg) or "")})
+    who = _whoami(client, tok["access_token"])
+    saved = _save_token(cfg, tok, who)
+    path.unlink(missing_ok=True)
+    return saved, (f"@{who['username']}" if who.get("username") else None)
+
 
 def redirect_uri(cfg: Config, port: int | None = None) -> str:
     p = port if port is not None else int(cfg.get("publish.tiktok.redirect_port", 8471) or 8471)
@@ -368,5 +431,5 @@ def publish(cfg: Config, client: httpx.Client, video: Path, text: PostText, vide
     return Posted(publish_id, f"tiktok://inbox/{who or 'me'}", "exported")
 
 
-__all__ = ["account", "authorize", "chunk_plan", "connected", "missing", "mode", "publish", "redirect_uri",
-           "scopes", "token_file"]
+__all__ = ["account", "authorize", "chunk_plan", "connected", "finish_web", "missing", "mode", "publish",
+           "redirect_uri", "scopes", "start_web", "token_file", "web_redirect"]

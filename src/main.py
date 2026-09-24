@@ -122,12 +122,22 @@ def cmd_tiktok_auth(cfg, conn, args) -> int:
     if why and "not set" in why:
         log.error("%s", why)
         return 1
+    web = tiktok_api.web_redirect(cfg)
     if args.dry_run:
         log.info("[dry run] would open TikTok consent for scopes %s with redirect %s", ",".join(tiktok_api.scopes(cfg)),
-                 tiktok_api.redirect_uri(cfg))
+                 web or tiktok_api.redirect_uri(cfg))
+        return 0
+    code = getattr(args, "code", None)
+    if web and not code:
+        tiktok_api.start_web(cfg)
+        log.info("Approve Ra'ij in the browser; the page that follows shows the `tiktok-auth --code … --state …` "
+                 "command to run here (valid 15 min).")
         return 0
     with make_client() as client:
-        path, who = tiktok_api.authorize(cfg, client)
+        if web:
+            path, who = tiktok_api.finish_web(cfg, client, code, getattr(args, "state", None))
+        else:
+            path, who = tiktok_api.authorize(cfg, client)
     log.info("TikTok authorized%s — token saved to %s (mode: %s)", f" as {who}" if who else "",
              path.relative_to(cfg.root), tiktok_api.mode(cfg))
     return 0
@@ -462,6 +472,9 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_, description=help_)
         p.add_argument("--dry-run", action="store_true", help="Show what would happen; no side effects")
         p.set_defaults(func=func)
+        if name == "tiktok-auth":
+            p.add_argument("--code", help="The code from the callback page (or the whole callback URL)")
+            p.add_argument("--state", help="The state from the callback page")
         if name == "publish":
             p.add_argument("--now", action="store_true",
                            help="Ignore the posting windows: post every approved video to its connected platforms now")
