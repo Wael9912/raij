@@ -174,6 +174,9 @@ video:
 pipeline:
   max_age_days: 2                  # a pick still not reviewed after this is expired (stale trend, saves quota)
   max_attempts: 3                  # retryable failures per item (extract, script, voice, assemble) before it fails
+                                   # (an outage — LLM/edge-tts/stock unreachable or out of quota — never counts)
+  catch_up_hours: 2                # the 30-min publish job finishes leftovers of an interrupted daily run this
+                                   # often (0 = never; 2026-09-24 a sleeping Mac cost 5 of 8 picks until next day)
 
 publish:
   max_attempts: 3                  # per (video, platform), across runs; then a Telegram alert
@@ -232,6 +235,8 @@ schedule:
                                    # 07:00 — Gemini's free quotas reset at 07:00 UTC = 10:00 Cairo; at 07:00 the strong
                                    # models were still exhausted from the day before and weak fallbacks wrote dialect.
   timezone: Africa/Cairo           # server (systemd) timer runs at run_daily_at in this zone
+  keep_awake: true                 # Mac: pipeline commands hold `caffeinate -i -s` while they run (src/power.py);
+                                   # the 10:30 run of 2026-09-24 slept with the Mac from 10:33 to 14:21
 
 analytics:
   track_days: 30                   # keep pulling metrics for posts this recent

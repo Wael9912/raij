@@ -226,6 +226,7 @@ def test_service_plists_and_install(env, tmp_path, monkeypatch):
     assert specs["com.raij.bot"]["KeepAlive"] is True and specs["com.raij.bot"]["ProgramArguments"][-1] == "bot"
     assert specs["com.raij.daily"]["StartCalendarInterval"] == {"Hour": 10, "Minute": 30}   # after Gemini's quota reset
     assert specs["com.raij.publish"]["StartInterval"] == 1800
+    assert specs["com.raij.publish"]["ProgramArguments"][-2:] == ["publish", "--catch-up"]   # finishes leftovers
     assert all(s["WorkingDirectory"] == str(cfg.root) and "/opt/homebrew/bin" in s["EnvironmentVariables"]["PATH"]
                for s in specs.values())
     cmds = []
@@ -249,6 +250,7 @@ def test_systemd_units_for_linux_server(env):
     assert "run python -m src.main bot" in u["raij-bot.service"] and f"WorkingDirectory={cfg.root}" in u["raij-bot.service"]
     assert "OnCalendar=*-*-* 10:30:00 Africa/Cairo" in u["raij-daily.timer"] and "Persistent=true" in u["raij-daily.timer"]
     assert "OnUnitInactiveSec=30min" in u["raij-publish.timer"] and "Type=oneshot" in u["raij-publish.service"]
+    assert "src.main publish --catch-up" in u["raij-publish.service"]
     cmds = []
 
     def run(cmd):

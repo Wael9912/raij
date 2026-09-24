@@ -520,9 +520,10 @@ def test_stock_outage_is_retried_not_failed(env, monkeypatch):
     down = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
     with pytest.raises(broll.BrollUnavailable, match="nothing looked up"):
         broll.choose(cfg, down, ["auction hammer", "crowd"], need=5, used=set())
-    assert runner.assemble(cfg, conn, client=down, run=FakeFFmpeg()) == 1
+    for _ in range(4):                                  # an outage is nobody's fault: waits, never counted (2026-09-24)
+        assert runner.assemble(cfg, conn, client=down, run=FakeFFmpeg()) == 1
     row = conn.execute("SELECT status, notes FROM videos").fetchone()
-    assert row["status"] == "voiced" and json.loads(row["notes"])["attempts"] == 1
+    assert row["status"] == "voiced" and "attempts" not in json.loads(row["notes"] or "{}")
 
     # A search that answers but finds nothing is deterministic: the video fails.
     empty = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"videos": []})))

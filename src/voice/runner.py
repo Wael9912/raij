@@ -4,8 +4,9 @@ Output (only under assets/generated/voice/, the assembler's allowed input):
   <script_id>.wav         48 kHz mono, loudness-normalized to voice.target_lufs
   <script_id>.words.json  word timings + beat spans, for subtitles and b-roll cuts (Phase 6)
 A videos row records it as 'voiced'. Over voice.max_seconds → re-synthesized once at a faster
-rate; still over → 'failed'. A network failure writes only scripts.notes.attempts, so the next run
-retries — until pipeline.max_attempts, when a 'failed' video row closes the script (A6).
+rate; still over → 'failed'. An unreachable or cut-off edge-tts stream (tts.Unreachable/Truncated) leaves
+the script for the next run without counting; other failures count in scripts.notes.attempts until
+pipeline.max_attempts, when a 'failed' video row closes the script (A6).
 """
 from __future__ import annotations
 
@@ -59,9 +60,11 @@ def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path, synth=tts.s
     text = tts.speech_text(beats)
     wav = out_dir / f"{stem or script['id']}.wav"
 
+    script_words = len(script["body_ar"].split())
     with tempfile.TemporaryDirectory(prefix="raij-tts-") as tmp:
         raw = Path(tmp) / "raw.mp3"
         words = synth(text, voice, rate, pitch, raw)
+        tts.check_complete(words, script_words)            # a cut-off stream is retried, never rendered
         seconds = tts.duration(cfg, raw, run=run)
         if seconds > max_s:
             faster = tts.faster_rate(rate, seconds, max_s)
@@ -70,6 +73,7 @@ def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path, synth=tts.s
             log.info("Script %d: %.1fs > %ss, re-synthesizing at %s", script["id"], seconds, max_s, faster)
             rate = faster
             words = synth(text, voice, rate, pitch, raw)
+            tts.check_complete(words, script_words)
             seconds = tts.duration(cfg, raw, run=run)
             if seconds > max_s:
                 raise TooLong(f"{seconds:.1f}s even at {rate}")
@@ -83,7 +87,7 @@ def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path, synth=tts.s
                                       "words": [asdict(w) for w in words], "beats": spans},
                                      ensure_ascii=False, indent=1), encoding="utf-8")
     notes = {"voice": voice, "rate": rate, "lufs": loud.get("output_i"), "true_peak": loud.get("output_tp"),
-             "words": len(words), "script_words": len(script["body_ar"].split()), "kind": fmt.kind,
+             "words": len(words), "script_words": script_words, "kind": fmt.kind,
              "tashkeel": sum(1 for b in beats if b.get("tts"))}
     if seconds < min_s:
         notes["warning"] = f"short: {seconds:.1f}s < {min_s}s"
@@ -122,7 +126,12 @@ def voice(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, synth=tt
             _fail(conn, s["id"], str(exc))
             failed.append({"script_id": s["id"], "error": str(exc)})
             continue
-        except Exception as exc:                        # network/ffmpeg: retry next run, up to the cap
+        except (tts.Unreachable, tts.Truncated) as exc:  # the network's fault: wait for the next run, no count
+            msg = f"{type(exc).__name__}: {exc}"
+            log.error("Script %d: voice service unreachable, left for the next run: %s", s["id"], msg)
+            retry.append({"script_id": s["id"], "error": msg})
+            continue
+        except Exception as exc:                        # ffmpeg, odd answers: retry next run, up to the cap
             msg = f"{type(exc).__name__}: {exc}"
             notes = json.loads(s.get("notes") or "{}")
             notes["attempts"] = int(notes.get("attempts") or 0) + 1

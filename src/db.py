@@ -229,7 +229,12 @@ def expire_stale(conn: sqlite3.Connection, max_age_days: float) -> dict[str, int
 
 
 def start_run(conn: sqlite3.Connection, command: str) -> int:
-    """Open the `runs` row every stage records (status `running`); `finish_run` closes it."""
+    """Open the `runs` row every stage records (status `running`); `finish_run` closes it. A run killed
+    half-way (`install-services` reloading the job, a crash, the Mac shut down) leaves its row `running` for
+    ever — such rows of this command are closed as failed/interrupted first, so the digest reports them."""
+    conn.execute("UPDATE runs SET status = 'failed', finished_at = datetime('now'), "
+                 "notes = json_set(coalesce(notes, '{}'), '$.interrupted', 1) "
+                 "WHERE command = ? AND status = 'running' AND started_at < datetime('now', '-6 hours')", (command,))
     run_id = conn.execute("INSERT INTO runs (command) VALUES (?)", (command,)).lastrowid
     conn.commit()
     return run_id

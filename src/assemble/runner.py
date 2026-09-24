@@ -3,9 +3,10 @@
 Per video: stock clips per beat (Pexels/Pixabay, cached in assets/stock) → subtitle PNGs from the
 voice word timings → end card → ffmpeg render to assets/generated/video/<video_id>.mp4, plus an
 .srt of the same captions. The videos row gets video_path, subtitle_path, broll_manifest and
-status 'rendered'. No usable clips for a beat → 'failed'; network/ffmpeg trouble only counts
-notes.attempts, so the next run retries — until pipeline.max_attempts, then 'failed' (A6; each
-retry re-downloads 50–80 MB of stock). Without a stock key the stage stops before touching anything.
+status 'rendered'. No usable clips for a beat → 'failed'; ffmpeg trouble counts notes.attempts, so the
+next run retries — until pipeline.max_attempts, then 'failed' (A6; each retry re-downloads 50–80 MB of
+stock); a stock/network outage (BrollUnavailable, httpx transport errors) waits without counting.
+Without a stock key the stage stops before touching anything. notes.timing = seconds per step.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import json
 import logging
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +95,8 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     used: set[str] = set(exclude or ())
     photos: dict[str, portrait.Photo | None] = {}
     manifest, clips_per_beat, credits = [], [], []
+    timing_s: dict[str, float] = {}                        # seconds per step, for the log and notes.timing
+    t0 = time.monotonic()
     for i, (beat, span) in enumerate(zip(beats_text, spans)):
         start = 0.0 if i == 0 else span["start"]
         end = spans[i + 1]["start"] if i + 1 < len(spans) else voice_s
@@ -122,6 +126,8 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
         for clip in stock:
             manifest.append(broll.manifest_entry(clip, i, start, (end - start) / len(paths)))
         clips_per_beat.append(paths)
+    timing_s["broll"] = round(time.monotonic() - t0, 1)
+    t0 = time.monotonic()
 
     segments = render.segments_for(spans, clips_per_beat, voice_s)
     total = sum(s.seconds for s in segments) + endcard_s
@@ -159,7 +165,11 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
                        progress_bar=bool(cfg.get("video.progress_bar", True)),
                        width=fmt.width, height=fmt.height, max_seconds=fmt.max_seconds, overlays=overlays,
                        logo_xy=render.LOGO_XY if fmt.portrait else (48, 40))
+    timing_s["graphics"] = round(time.monotonic() - t0, 1)  # subtitle PNGs, hook, end card, logo, chapters
+    t0 = time.monotonic()
     render.render(cfg, plan, run=run)
+    timing_s["render"] = round(time.monotonic() - t0, 1)
+    t0 = time.monotonic()
 
     srt_path = out_dir / f"{video['id']}.srt"
     srt_path.write_text(subtitles.srt(timing["words"], spans, renderer), encoding="utf-8")
@@ -169,12 +179,18 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
         made = thumbnail.make(cfg, plan.out, total - endcard_s, title or (beats_text[0]["text"] if beats_text else None),
                               series, look, out_dir / f"{video['id']}.thumb.jpg", work / "thumb", run=run, clips=clean)
         thumb = str(made.relative_to(cfg.root)) if made else None
+        timing_s["thumbnail"] = round(time.monotonic() - t0, 1)
     shutil.rmtree(work, ignore_errors=True)
     return {"video_path": str(plan.out.relative_to(cfg.root)), "subtitle_path": str(srt_path.relative_to(cfg.root)),
             "duration_s": plan.total, "manifest": manifest,
             "notes": {"voice_s": voice_s, "music": str(music) if music else None, "clips": len(manifest),
                       "credits": credits, "hook_title": title, "series": series, "cta": cta, "kind": fmt.kind,
-                      "chapters": chapters, "thumbnail": thumb}}
+                      "chapters": chapters, "thumbnail": thumb, "timing": timing_s}}
+
+
+def _outage(exc: BaseException) -> bool:
+    """The stock provider or the network was down (not this video's fault): wait, don't count an attempt."""
+    return isinstance(exc, (broll.BrollUnavailable, httpx.TransportError))
 
 
 def _fail(conn: sqlite3.Connection, video: dict[str, Any], reason: str) -> None:
@@ -219,6 +235,10 @@ def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, clien
                 continue
             except Exception as exc:                    # network, ffmpeg, stock outage: retry next run
                 msg = f"{type(exc).__name__}: {exc}"
+                if _outage(exc):
+                    log.error("Video %d: stock/network unreachable, left for the next run: %s", v["id"], msg)
+                    retry.append({"video_id": v["id"], "error": msg})
+                    continue
                 notes = json.loads(v.get("notes") or "{}")
                 notes["attempts"] = int(notes.get("attempts") or 0) + 1
                 if notes["attempts"] >= max_attempts:
@@ -241,8 +261,9 @@ def assemble(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, clien
             )
             conn.commit()
             rendered.append(v["id"])
-            log.info("Video %d → %s (%.1fs, %d clips, music: %s)", v["id"], row["video_path"], row["duration_s"],
-                     row["notes"]["clips"], row["notes"]["music"] or "none")
+            log.info("Video %d → %s (%.1fs, %d clips, music: %s; %s)", v["id"], row["video_path"],
+                     row["duration_s"], row["notes"]["clips"], row["notes"]["music"] or "none",
+                     " ".join(f"{k} {s:.0f}s" for k, s in row["notes"]["timing"].items()))
     finally:
         if own_client:
             client.close()

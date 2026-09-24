@@ -97,6 +97,10 @@ def script(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client:
             msg = str(exc) if isinstance(exc, llm.LLMError) else f"{type(exc).__name__}: {exc}"
             if not isinstance(exc, llm.LLMError):
                 log.exception("Story %d (%s): unexpected script error", story["id"], brand["id"])
+            if isinstance(exc, llm.LLMError) and exc.outage:       # nobody's fault: wait, don't count
+                log.error("Story %d (%s): no LLM reachable, left for the next run: %s", story["id"], brand["id"], msg)
+                retry.append({"story_id": story["id"], "brand": brand["id"], "error": msg})
+                continue
             if _retry_later(conn, story, max_attempts):
                 log.error("Story %d (%s): will retry next run: %s", story["id"], brand["id"], msg)
                 retry.append({"story_id": story["id"], "brand": brand["id"], "error": msg})

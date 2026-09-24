@@ -4,10 +4,12 @@ the Mac, systemd units + timers on a Linux server (installed with sudo). Same jo
 - com.raij.bot      — the Telegram review bot, always running, restarted if it dies.
 - com.raij.daily    — `run-daily` every day at schedule.run_daily_at (local time); if the Mac was asleep
                       then, launchd runs it on wake.
-- com.raij.publish  — `publish` every publish.every_minutes, so approvals go out soon after the tap.
+- com.raij.publish  — `publish --catch-up` every publish.every_minutes, so approvals go out soon after the
+                      tap, and leftovers of an interrupted daily run are finished (main.catch_up).
 
 Logs go to data/logs/<job>.log. On a Mac nothing runs while it's asleep or off; Telegram taps queue
-and are handled when it wakes. On Linux the daily timer is Persistent (a missed run happens at boot).
+and are handled when it wakes. Pipeline commands hold the Mac awake while they run (src/power.py), but a
+closed lid on battery still sleeps. On Linux the daily timer is Persistent (a missed run happens at boot).
 """
 from __future__ import annotations
 
@@ -36,9 +38,9 @@ def plists(cfg: Config) -> dict[str, dict]:
     logs = cfg.root / "data" / "logs"
     hour, minute = (int(x) for x in str(cfg.get("schedule.run_daily_at", "07:00")).split(":"))
 
-    def job(label: str, command: str, **extra) -> dict:
+    def job(label: str, *command: str, **extra) -> dict:
         name = label.rsplit(".", 1)[1]
-        return {"Label": label, "ProgramArguments": [uv, "run", "python", "-m", "src.main", command],
+        return {"Label": label, "ProgramArguments": [uv, "run", "python", "-m", "src.main", *command],
                 "WorkingDirectory": str(cfg.root),
                 "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
                                          "LANG": "en_US.UTF-8", "PYTHONUNBUFFERED": "1"},
@@ -50,7 +52,8 @@ def plists(cfg: Config) -> dict[str, dict]:
         "com.raij.daily": job("com.raij.daily", "run-daily", StartCalendarInterval={"Hour": hour, "Minute": minute}),
         # RunAtLoad: a StartInterval timer restarts on every reload, so without it a day of code reloads would
         # never let the job fire (seen 2026-09-23: four reloads, "runs = 0", approved videos never posted).
-        "com.raij.publish": job("com.raij.publish", "publish", RunAtLoad=True,
+        # --catch-up: the same pass finishes what an interrupted daily run left behind (main.catch_up).
+        "com.raij.publish": job("com.raij.publish", "publish", "--catch-up", RunAtLoad=True,
                                 StartInterval=int(cfg.get("publish.every_minutes", 30)) * 60),
     }
 
@@ -81,7 +84,7 @@ def units(cfg: Config, user: str | None = None) -> dict[str, str]:
         "raij-daily.service": service("daily", "run-daily", "Type=oneshot\nTimeoutStartSec=3h\n"),
         "raij-daily.timer": (f"[Unit]\nDescription=Ra'ij daily run\n\n[Timer]\nOnCalendar=*-*-* {at}:00 {tz}\n"
                              f"Persistent=true\n\n[Install]\nWantedBy=timers.target\n"),
-        "raij-publish.service": service("publish", "publish", "Type=oneshot\nTimeoutStartSec=1h\n"),
+        "raij-publish.service": service("publish", "publish --catch-up", "Type=oneshot\nTimeoutStartSec=3h\n"),
         "raij-publish.timer": (f"[Unit]\nDescription=Ra'ij publish every {every} min\n\n[Timer]\nOnBootSec=5min\n"
                                f"OnUnitInactiveSec={every}min\n\n[Install]\nWantedBy=timers.target\n"),
     }

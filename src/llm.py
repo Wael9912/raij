@@ -27,8 +27,25 @@ PARSE_RETRIES = 1
 _EXHAUSTED: set[str] = set()
 
 
+# Failure texts that mean the provider, not the prompt, was the problem: unreachable, throttled, overloaded,
+# or not configured. `LLMError.outage` is True when every provider failed that way.
+_OUTAGE_MARKS = ("ConnectError", "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
+                 "RemoteProtocolError", "HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504",
+                 "not set", "out of quota", "unknown provider")
+
+
 class LLMError(RuntimeError):
     """Every provider in the fallback order failed or was unavailable."""
+
+    def __init__(self, message: str, failures: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.failures = list(failures or [])
+
+    @property
+    def outage(self) -> bool:
+        """No provider could be reached or had quota (nothing about this item was at fault) — the stages then
+        leave the item for the next run without counting an attempt (pipeline.max_age_days still bounds it)."""
+        return bool(self.failures) and all(any(mark in f for mark in _OUTAGE_MARKS) for f in self.failures)
 
 
 class ProviderSkipped(RuntimeError):
@@ -187,7 +204,7 @@ def _run(cfg: Config, prompt: str, system: str | None, json_mode: bool,
     finally:
         if own_client:
             client.close()
-    raise LLMError("no LLM provider succeeded — " + "; ".join(failures))
+    raise LLMError("no LLM provider succeeded — " + "; ".join(failures), failures)
 
 
 def complete(cfg: Config, prompt: str, *, system: str | None = None,

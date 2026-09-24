@@ -175,6 +175,10 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
                 failed.append({"id": row["id"], "error": str(exc)})
                 continue
             except (llm.LLMError, CardError) as exc:
+                if isinstance(exc, llm.LLMError) and exc.outage:   # nobody's fault: wait, don't count
+                    log.error("#%d: no LLM reachable, left for the next run: %s", row["id"], exc)
+                    retry.append({"id": row["id"], "error": str(exc)})
+                    continue
                 if _retry_later(conn, row, max_attempts):
                     log.error("#%d: story card failed, will retry next run: %s", row["id"], exc)
                     retry.append({"id": row["id"], "error": str(exc)})

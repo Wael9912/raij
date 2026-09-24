@@ -95,8 +95,50 @@ def cmd_bot(cfg, conn, args) -> int:
 
 def cmd_publish(cfg, conn, args) -> int:
     from src.publish.runner import publish
-    return publish(cfg, conn, dry_run=args.dry_run, now=bool(getattr(args, "now", False)),
+    code = publish(cfg, conn, dry_run=args.dry_run, now=bool(getattr(args, "now", False)),
                    only=[int(v) for v in (getattr(args, "video", None) or [])] or None)
+    if getattr(args, "catch_up", False):                 # the 30-minute launchd job also finishes broken runs
+        code |= catch_up(cfg, conn, args)
+    return code
+
+
+def leftovers(conn) -> dict[str, int]:
+    """Work a broken run left behind, by stage: picks never extracted, cards never scripted, scripts never
+    voiced, voiced videos never rendered, rendered ones never sent for review."""
+    queries = {
+        "extract": "SELECT count(*) FROM candidates c WHERE c.status = 'selected' "
+                   "AND NOT EXISTS (SELECT 1 FROM stories s WHERE s.candidate_id = c.id)",
+        # A candidate stays `extracted` after its script passed; only stories without any script are waiting.
+        "script": "SELECT count(*) FROM stories s JOIN candidates c ON c.id = s.candidate_id "
+                  "WHERE c.status = 'extracted' AND NOT EXISTS (SELECT 1 FROM scripts x WHERE x.story_id = s.id)",
+        "voice": "SELECT count(*) FROM scripts x WHERE x.status = 'passed' AND NOT EXISTS "
+                 "(SELECT 1 FROM videos v WHERE v.script_id = x.id)",
+        "assemble": "SELECT count(*) FROM videos WHERE status = 'voiced'",
+        "review": "SELECT count(*) FROM videos WHERE status = 'rendered'",
+    }
+    return {name: conn.execute(sql).fetchone()[0] for name, sql in queries.items()}
+
+
+def catch_up(cfg, conn, args) -> int:
+    """Finish what an interrupted run left behind (the Mac slept, the LLM or edge-tts was unreachable): run
+    `produce` on the leftovers, at most once per pipeline.catch_up_hours, so a pick isn't lost until tomorrow's
+    daily run. Outages don't count as attempts (extract/script/voice/assemble), so this can't burn an item's
+    retries; pipeline.max_age_days still bounds how long anything is retried."""
+    import time
+    hours = float(cfg.get("pipeline.catch_up_hours", 2) or 0)
+    if hours <= 0 or args.dry_run:
+        return 0
+    left = {k: v for k, v in leftovers(conn).items() if v}
+    if not left:
+        return 0
+    last = db.get_flag(conn, "last_catch_up")
+    if last and time.time() - float(last) < hours * 3600:
+        log.info("Catch-up: %s waiting, next try in %d min", ", ".join(f"{v} to {k}" for k, v in left.items()),
+                 int((hours * 3600 - (time.time() - float(last))) // 60) + 1)
+        return 0
+    db.set_flag(conn, "last_catch_up", str(time.time()))
+    log.info("Catch-up: %s — running produce", ", ".join(f"{v} to {k}" for k, v in left.items()))
+    return cmd_produce(cfg, conn, args, what="Catch-up run")
 
 
 def cmd_youtube_auth(cfg, conn, args) -> int:
@@ -157,7 +199,8 @@ def cmd_install_services(cfg, conn, args) -> int:
                 log.info("[dry run] %s:\n%s", name, body)
         else:
             for label, spec in service.plists(cfg).items():
-                log.info("[dry run] %s: %s", label, " ".join(spec["ProgramArguments"][-1:]))
+                argv = spec["ProgramArguments"]
+                log.info("[dry run] %s: %s", label, " ".join(argv[argv.index("src.main") + 1:]))
         return 0
     for path in service.install(cfg):
         log.info("Installed %s", path)
@@ -223,6 +266,7 @@ def cmd_tick(cfg, conn, args) -> int:
             if done:
                 log.info("Ran queued job(s): %s", ", ".join(done))
         code |= publish(cfg, conn, dry_run=args.dry_run)
+        code |= catch_up(cfg, conn, args)                 # leftovers of a run the LLM outage cut short
     finally:
         # Whatever happened (A1): if the DB changed, the caller must save it, or the next tick replays the day
         # (daily pipeline again, cards re-sent, quota burned).
@@ -284,10 +328,10 @@ def _notify_failures(cfg, failures: list[str], what: str) -> None:
         log.warning("Couldn't send the failure notice: %s", exc)
 
 
-def cmd_produce(cfg, conn, args) -> int:
+def cmd_produce(cfg, conn, args, what: str = "Producing your picks") -> int:
     """Make videos for everything already selected (the owner's picks, topics and scripts from the bot):
     extract → script → voice → assemble → review. Loops while new selected work appears (a pick made during the
-    run), at most 3 rounds. Shares the `pipeline` lock with run-daily."""
+    run), at most 3 rounds. Shares the `pipeline` lock with run-daily. `catch_up` reuses it for leftovers."""
     from src.lock import Busy, single
     failures: list[str] = []
     try:
@@ -321,7 +365,7 @@ def cmd_produce(cfg, conn, args) -> int:
         log.warning("produce skipped: %s (the running pipeline will pick the work up)", exc)
         return 0
     if failures and not args.dry_run:
-        _notify_failures(cfg, failures, "Producing your picks")
+        _notify_failures(cfg, failures, what)
     return 1 if failures else 0
 
 
@@ -416,6 +460,9 @@ def cmd_run_daily(cfg, conn, args) -> int:
 
 # Jobs the bot can queue (src/jobs.py) — run inline by `tick` on GitHub Actions.
 JOBS = {"trending": cmd_trending, "produce": cmd_produce, "run-daily": cmd_run_daily, "publish": cmd_publish}
+# Commands that hold the Mac awake while they run (src/power.py): everything that works the pipeline, never
+# the bot (always on) or the one-off admin commands.
+AWAKE_COMMANDS = frozenset(STAGES) | {"run-daily", "produce", "trending", "tick", "finalize"}
 
 
 def log_hint() -> str:
@@ -481,6 +528,9 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Ignore the posting windows: post every approved video to its connected platforms now")
             p.add_argument("--video", action="append", metavar="ID",
                            help="Only this approved video (repeatable); windows are ignored for it")
+            p.add_argument("--catch-up", action="store_true", dest="catch_up",
+                           help="Afterwards finish what an interrupted run left behind (produce), at most once "
+                                "per pipeline.catch_up_hours — the launchd/systemd publish job passes this")
         if name == "discover":
             p.add_argument("--source", action="append", choices=["youtube", "reddit", "trends", "wiki", "rss"],
                            help="Only run this source (repeatable)")
@@ -511,6 +561,9 @@ def main(argv: list[str] | None = None) -> int:
     # httpx logs full request URLs at INFO, and those carry API keys in the query string.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     cfg = load_config(args.config)
+    if args.command in AWAKE_COMMANDS and cfg.get("schedule.keep_awake", True) and not args.dry_run:
+        from src import power
+        power.stay_awake()                       # a sleeping Mac freezes the run (src/power.py)
     if args.command == "state":                  # must not hold the DB open while it's replaced
         return args.func(cfg, None, args)
     conn = db.connect(cfg.db_path)

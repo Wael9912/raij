@@ -29,6 +29,20 @@ class VoiceError(RuntimeError):
     """Synthesis or audio processing failed for this script."""
 
 
+class Unreachable(VoiceError):
+    """edge-tts couldn't be reached at all (DNS, connection, timeout) — the network's fault, not the script's."""
+
+
+class Truncated(VoiceError):
+    """edge-tts returned only part of the audio (seen live 2026-09-24: 22 of 99 words while the Mac's network
+    flapped — the 12 s clip was rendered and sent for review)."""
+
+
+# aiohttp/websocket exception names that mean "no service", as opposed to a rejected request.
+_UNREACHABLE = ("ClientConnector", "ClientOSError", "ServerDisconnected", "TimeoutError", "ConnectionReset",
+                "WSServerHandshake", "gaierror")
+
+
 @dataclass
 class Word:
     text: str
@@ -81,7 +95,16 @@ def synthesize(text: str, voice: str, rate: str, pitch: str, out: Path, attempts
             return words
         last = VoiceError("edge-tts returned no audio")
     out.unlink(missing_ok=True)
-    raise VoiceError(f"edge-tts failed after {attempts} attempts: {type(last).__name__}: {last}")
+    kind = Unreachable if any(mark in type(last).__name__ for mark in _UNREACHABLE) else VoiceError
+    raise kind(f"edge-tts failed after {attempts} attempts: {type(last).__name__}: {last}")
+
+
+def check_complete(words: list[Word], script_words: int, ratio: float = 0.6, min_words: int = 8) -> None:
+    """Raise Truncated when the voice spoke far fewer words than the script has. edge-tts tokenizes a little
+    differently from whitespace (a date is one token, "Giants.com" two), so real takes land at 0.9–1.05 of
+    the script's count; a cut-off stream lands far below."""
+    if script_words >= min_words and len(words) < ratio * script_words:
+        raise Truncated(f"edge-tts returned {len(words)} of {script_words} words — cut-off stream")
 
 
 def ffprobe_bin(cfg: Config) -> str:

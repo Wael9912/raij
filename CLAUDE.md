@@ -24,12 +24,14 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 17 TikTok app | ✅ live (sandbox) 2026-09-24 04:13 | `24fe024`… | **first inbox drafts live:** #24 #25 #26 #31 #32 landed in the owner's TikTok inbox (captions in Telegram); TikTok's pending-drafts cap (`spam_risk_too_many_pending_share`, an HTTP **400**) stopped the 6th — now a limit (attempt given back). Sandbox keys in .env; production keys after the app review (SETUP.md §8 step 6) | `publish/tiktok_api.py`: Content Posting API, **inbox mode** (draft in the owner's TikTok inbox + caption to Telegram; owner posts from the app) now, `direct` after TikTok's audit; `tiktok-auth` (Desktop Login Kit, loopback 127.0.0.1:8471, hex-PKCE); public privacy/terms at https://raij.dafatir.workers.dev (`deploy/site/`); SETUP.md §8 |
 | 18 Professional فصحى | ✅ 2026-09-24 | (this commit) | owner: "KSA accent and reading very bad — professional standard Arabic script and voice for all future products". Dialect gate (`script/fusha.py`), editor pass + full tashkeel for the TTS (`script/polish.py`, `script_polish.txt`), strict-MSA prompts, voice → `ar-JO-TaimNeural` (bench: 94.5 % words read right vs Hamed 93.6), daily run moved to 10:30 Cairo (after Gemini's quota reset — 07:00 runs got weak fallback models that wrote Egyptian dialect) |
 | 13b Post now | ✅ done | (2026-09-24) | audit "approved videos never all post": windows allow 4/day vs ~9 made/day + Meta keys missing + zombie job blocked the bot queue. `/post_now [ids]` (confirm tap) → `videos.notes.post_now` → `publish` job; `publish --now`; `publish.windows.per_window`; zombie-safe `jobs.alive` |
+| 19 Performance audit | ✅ 2026-09-24 | (this commit) | the 10:30 daily run took 4 h 16 min because the **Mac slept** (lid closed 10:33 → 14:21; Power Nap woke it 45 s every 16 min without network): 5/8 picks lost to ConnectError, a cut-off edge-tts stream (22/99 words) was rendered as #46 and sent for review. Fixes: `src/power.py` caffeinate while pipeline commands run, `tts.check_complete` (Truncated), outages never count as attempts, **same-day catch-up** (`publish --catch-up` every 30 min → `produce` on leftovers, `pipeline.catch_up_hours` 2), stale `running` runs closed, `videos.notes.timing` per assemble step. Encoder benchmark: libx264 medium ≈ 6× real time on the M3, videotoolbox no faster — not the bottleneck |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
 Missing: YouTube API key (discovery), Reddit, Groq, Pixabay, Meta. YouTube OAuth ✅ (`data/youtube.token.json`; re-auth
 pending for the Phase 12 playlist scope).
 **Runs on the owner's Mac again since 2026-09-23 17:47 Cairo** (launchd: `com.raij.bot` always on, `com.raij.daily`
-07:00, `com.raij.publish` every 30 min — `install-services`). GitHub Actions is the *fallback* only: workflow is
+10:30, `com.raij.publish --catch-up` every 30 min — `install-services`; **a closed lid on battery still pauses
+everything** — pipeline commands only block *idle* sleep). GitHub Actions is the *fallback* only: workflow is
 dispatch-only (no cron), Cloudflare Worker cron paused, `RAIJ_ENABLED` should be `false` (the auto-mode classifier
 blocked `gh variable set` — owner runs it). Never run a second Telegram poller (two pollers fight over getUpdates).
 "check" = `uv run python -m src.main services`, `tail data/logs/{bot,daily,publish,jobs}.log`, and the DB.
@@ -348,6 +350,29 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   0.907 / 44 s; polished #45: Taim plain 0.913 → tashkeel 0.93, Hamed 0.93 both. Default → **ar-JO-TaimNeural**
   (alt Shakir); the owner picks by ear from the clips sent. Owner-written scripts (`segment_script`) are not
   polished (their text is verbatim). Videos #40–#43 (in review) predate the change.
+
+- **Performance audit (2026-09-24, owner: "audit pipeline performance and fix any issues"):** *Findings* from
+  `runs` + logs + `pmset -g log`: the 10:30 daily run lasted 4 h 16 min — the lid was closed at 10:33 (clamshell
+  sleep on battery) until 14:21; Power Nap DarkWakes (45 s every ~16 min, no network) let it crawl: extract lost
+  5/8 picks to ConnectError (and burnt an attempt each), script wrote 0/5, edge-tts DNS-failed twice and returned a
+  **cut-off stream** for script 58 (22 of 99 words, 12 s) which was rendered as #46 and sent for review; the 07:00
+  `script` run (#87) stayed `running` for ever (killed by `install-services`' bootout); nothing retried leftovers
+  before the next day's run. Render cost on the M3: ~4–5 min per Short, of which encoding is small (bench: 30 s of
+  1080×1920 in 5 s with libx264 medium; `h264_videotoolbox` no faster, veryfast 2.3 s) — the rest is stock
+  search/download, face checks, ~100 subtitle PNGs and the 10-input xfade graph; `videos.notes.timing` now
+  records broll/graphics/render/thumbnail seconds per video so the next audit has numbers. *Fixes:* (1)
+  `src/power.py`: `main()` starts `caffeinate -i -s -w <pid>` for every pipeline command (`main.AWAKE_COMMANDS`,
+  never the bot; `schedule.keep_awake`); a closed lid on battery can't be overridden from user space. (2) Outages
+  don't count as attempts: `LLMError.outage` (every provider unreachable/429/503/unconfigured), `tts.Unreachable`
+  (ClientConnector*/timeouts), `assemble._outage` (BrollUnavailable, httpx transport errors) — the item waits for
+  the next run; `pipeline.max_age_days` still bounds it. (3) `tts.check_complete`: voice with < 60 % of the
+  script's words → `Truncated`, retried, never rendered. (4) **Same-day catch-up:** the launchd/systemd publish job
+  runs `publish --catch-up` → `main.catch_up` → `produce` on `main.leftovers` (selected without story, extracted
+  without script, passed without voice, voiced, rendered), at most once per `pipeline.catch_up_hours` (2,
+  `control.last_catch_up`); `tick` does the same on Actions. Live: the first pass at 15:11 picked up 5+4+2 items.
+  (5) `db.start_run` closes `running` rows of the same command older than 6 h as failed `{"interrupted": 1}`.
+  Owner options not done here: `sudo pmset repeat wakeorpoweron MTWRFSU 10:28:00` (wake for the daily run),
+  keep the lid open/on AC while it runs, or a hosted fallback.
 
 ## Next up
 
