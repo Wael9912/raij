@@ -9,8 +9,8 @@ main = "worker.js"
 compatibility_date = "2026-09-01"
 
 [vars]
-TIKTOK_VERIFY_PATH = ""
-TIKTOK_VERIFY_BODY = ""
+TIKTOK_VERIFY_PATH = "tiktokX9jK9hU3Gojn2Yl3f92f8B6X3l7Gzva8.txt"
+TIKTOK_VERIFY_BODY = "tiktok-developers-site-verification=X9jK9hU3Gojn2Yl3f92f8B6X3l7Gzva8"
 
 [observability]
 enabled = true
