@@ -371,6 +371,8 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   without script, passed without voice, voiced, rendered), at most once per `pipeline.catch_up_hours` (2,
   `control.last_catch_up`); `tick` does the same on Actions. Live: the first pass at 15:11 picked up 5+4+2 items.
   (5) `db.start_run` closes `running` rows of the same command older than 6 h as failed `{"interrupted": 1}`.
+  (6) `llm._OVERLOADED`: a Gemini model that answered 503 rests `llm.overload_cooldown_seconds` (300) before
+  it's probed again — live, every call walked five overloaded flash models (~25 s) before flash-lite answered.
   Owner options not done here: `sudo pmset repeat wakeorpoweron MTWRFSU 10:28:00` (wake for the daily run),
   keep the lid open/on AC while it runs, or a hosted fallback.
 

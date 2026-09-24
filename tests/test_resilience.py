@@ -227,3 +227,38 @@ def test_assemble_notes_carry_timing_and_outages_do_not_count(env, monkeypatch):
     assert assemble_runner._outage(httpx.ConnectError("x"))
     assert not assemble_runner._outage(RuntimeError("ffmpeg failed"))
     assert not assemble_runner._outage(subprocess.TimeoutExpired("ffmpeg", 900))
+
+
+# --- LLM: an overloaded (503) model rests for a while instead of being re-asked on every call ----------------
+
+def test_overloaded_gemini_model_rests_then_is_probed_again(monkeypatch, tmp_path):
+    from src import llm
+    monkeypatch.setenv("RAIJ_DB_PATH", str(tmp_path / "t.db"))
+    cfg = load_config()
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("GEMINI_MODEL", "big")
+    monkeypatch.setitem(cfg.data["llm"], "gemini_fallback_models", ["lite"])
+    monkeypatch.setitem(cfg.data["llm"], "overload_cooldown_seconds", 300)
+    monkeypatch.setattr(llm, "_EXHAUSTED", set())
+    monkeypatch.setattr(llm, "_OVERLOADED", {})
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    hits = []
+
+    def handler(request):
+        model = request.url.path.split("/")[-1].split(":")[0]
+        hits.append(model)
+        if model == "big":
+            return httpx.Response(503, json={"error": {"message": "high demand"}})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps({"ok": model})}]}}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert llm.complete_json(cfg, "q", client=client) == {"ok": "lite"}
+    assert hits == ["big", "big", "lite"]                       # one retry, then the next model
+    assert llm.complete_json(cfg, "q", client=client) == {"ok": "lite"}
+    assert hits == ["big", "big", "lite", "lite"]               # resting: not asked again
+    clock["now"] += 301
+    assert llm.complete_json(cfg, "q", client=client) == {"ok": "lite"}
+    assert hits[-3:] == ["big", "big", "lite"]                  # cooldown over: probed again
+    assert "big" not in llm._EXHAUSTED                          # a 503 never exhausts a model for the run

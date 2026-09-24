@@ -229,6 +229,8 @@ llm:
   # lite writes noticeably weaker Arabic (typos, stray non-Arabic characters).
   gemini_fallback_models: [gemini-3.7-flash, gemini-3.6-flash, gemini-3.5-flash, gemini-3-flash-preview,
                            gemini-flash-lite-latest, gemma-4-31b-it]
+  overload_cooldown_seconds: 300   # a model that answered 503 "high demand" rests this long before it's asked again
+                                   # (re-asking five overloaded models cost ~25 s per call live, 2026-09-24)
 
 schedule:
   run_daily_at: "10:30"            # local time; launchd job com.raij.daily (install-services). Phase 18: moved from

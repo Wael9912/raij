@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any, Callable
 
 import httpx
@@ -25,6 +26,10 @@ CLOUD_RETRIES = 4
 PARSE_RETRIES = 1
 # Gemini models that returned 429 (quota) or 404 (retired) this process; skipped until the next run.
 _EXHAUSTED: set[str] = set()
+# Models that answered 503 "high demand": skipped until the deadline (monotonic seconds), then probed again. A
+# spike is temporary, but re-asking five overloaded models on every call cost ~25 s per call live (2026-09-24).
+_OVERLOADED: dict[str, float] = {}
+OVERLOAD_COOLDOWN = 300.0
 
 
 # Failure texts that mean the provider, not the prompt, was the problem: unreachable, throttled, overloaded,
@@ -85,7 +90,11 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
     # fall through to the next model when one is out of quota, overloaded, or retired.
     models = [cfg.secret("GEMINI_MODEL", "gemini-flash-latest")] + cfg.get("llm.gemini_fallback_models", [])
     last: FetchError | None = None
-    live = [m for m in dict.fromkeys(models) if m not in _EXHAUSTED]
+    now = time.monotonic()
+    cooldown = float(cfg.get("llm.overload_cooldown_seconds", OVERLOAD_COOLDOWN))
+    live = [m for m in dict.fromkeys(models) if m not in _EXHAUSTED and _OVERLOADED.get(m, 0.0) <= now]
+    if not live:                                        # everything is cooling down: ask the least recent one
+        live = [m for m in dict.fromkeys(models) if m not in _EXHAUSTED][-1:]
     for i, model in enumerate(live):
         # Only the last model gets the full backoff; otherwise an overloaded one is left fast.
         retries = CLOUD_RETRIES if i == len(live) - 1 else 1
@@ -94,7 +103,9 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
                            headers={"x-goog-api-key": key}, retries=retries)
         except FetchError as exc:
             if any(f"HTTP {code}" in str(exc) for code in (404, 429, 503)):
-                if "HTTP 503" not in str(exc):                  # out of quota or retired
+                if "HTTP 503" in str(exc):                      # overloaded: rest it, re-probe later
+                    _OVERLOADED[model] = time.monotonic() + cooldown
+                else:                                           # out of quota or retired
                     _EXHAUSTED.add(model)
                 log.warning("Gemini %s unavailable, trying next model: %s", model, exc)
                 last = exc
