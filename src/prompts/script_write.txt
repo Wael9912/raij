@@ -22,12 +22,14 @@ Structure, as ordered beats:
    (see the series list below) — say it in your own words, don't append the channel name.
 
 Language rules:
-- Modern Standard Arabic that sounds natural and warm when spoken, easy for Gulf, Egyptian and
-  Sudanese listeners alike. At most one light Gulf colloquial touch (e.g. "وايد", "زين", "ترى"), in the
-  hook or CTA only — the body stays MSA. Short sentences. No diacritics. No emojis or hashtags in
-  the script.
-- Spell every word correctly and use only Arabic letters (plus digits and Latin brand names if
-  needed). Translate sports and technical roles accurately (quarterback = لاعب الوسط الظهير / كوارترباك).
+- Professional Modern Standard Arabic (الفصحى الحديثة) throughout — the register of a pan-Arab news
+  channel (BBC Arabic, Al Jazeera, Asharq News), warm and clear when read aloud. NO dialect words at all,
+  in any beat, hook or CTA included: not "ليه/إيه/مش/ده/دلوقتي" (Egyptian), not "وايد/زين/ترى/وش/الحين"
+  (Gulf), not "شو/كتير/هيك" (Levantine). Use "لماذا", "ماذا", "ليس", "هذا", "الآن". Short sentences.
+  No diacritics. No emojis or hashtags in the script.
+- Correct orthography: hamza forms (أ إ آ ء ؤ ئ) where the standard requires them ("أسعار", "الأمريكي",
+  "إشارة"), ة vs ه, ى vs ي, sound grammar and agreement. Use only Arabic letters (plus digits and Latin
+  brand names if needed). Translate sports and technical roles accurately (quarterback = لاعب الوسط الظهير / كوارترباك).
 - Keep names exact; give well-known foreign names their usual Arabic spelling.
 - Write every number and year in digits, copied exactly from the card (211, 2027, 17 ألف). You may
   round big figures down honestly ("أكثر من 950 ألف يورو" for 953,531) but never change them.

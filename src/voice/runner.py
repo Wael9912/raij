@@ -19,6 +19,7 @@ from typing import Any
 
 from src import db, formats
 from src.config import Config
+from src.script import fusha
 from src.voice import tts
 from src.voice.tts import RunCmd, VoiceError
 
@@ -75,13 +76,15 @@ def voice_script(cfg: Config, script: dict[str, Any], out_dir: Path, synth=tts.s
         loud = tts.normalize(cfg, raw, wav, run=run)
     seconds = tts.duration(cfg, wav, run=run)
 
+    words = [tts.Word(fusha.strip_tashkeel(w.text), w.start, w.end) for w in words]   # subtitles show plain text
     spans = tts.beat_spans(beats, words)
     words_path = wav.with_suffix(".words.json")
     words_path.write_text(json.dumps({"voice": voice, "rate": rate, "duration": seconds,
                                       "words": [asdict(w) for w in words], "beats": spans},
                                      ensure_ascii=False, indent=1), encoding="utf-8")
     notes = {"voice": voice, "rate": rate, "lufs": loud.get("output_i"), "true_peak": loud.get("output_tp"),
-             "words": len(words), "script_words": len(script["body_ar"].split()), "kind": fmt.kind}
+             "words": len(words), "script_words": len(script["body_ar"].split()), "kind": fmt.kind,
+             "tashkeel": sum(1 for b in beats if b.get("tts"))}
     if seconds < min_s:
         notes["warning"] = f"short: {seconds:.1f}s < {min_s}s"
     return {"voice_path": str(wav.relative_to(cfg.root)), "duration_s": seconds, "notes": notes}

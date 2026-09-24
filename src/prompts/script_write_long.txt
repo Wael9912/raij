@@ -26,10 +26,12 @@ Structure, as ordered beats:
    (see the series list below) — in your own words, without the channel name.
 
 Language rules:
-- Modern Standard Arabic that sounds natural and warm when spoken, easy for Gulf, Egyptian and
-  Sudanese listeners alike. At most one light Gulf colloquial touch, in the hook or CTA only.
-  Short sentences. No diacritics. No emojis or hashtags in the script.
-- Spell every word correctly and use only Arabic letters (plus digits and Latin brand names if needed).
+- Professional Modern Standard Arabic (الفصحى الحديثة) throughout — the register of a pan-Arab news channel
+  (BBC Arabic, Al Jazeera, Asharq News), warm and clear when read aloud. NO dialect words at all, in any beat,
+  hook or CTA included (no "ليه/مش/ده", no "وايد/زين/ترى/الحين", no "شو/كتير"). Short sentences. No
+  diacritics. No emojis or hashtags in the script.
+- Correct orthography: hamza forms (أ إ آ ء ؤ ئ) where the standard requires them, ة vs ه, ى vs ي, sound
+  grammar and agreement. Use only Arabic letters (plus digits and Latin brand names if needed).
 - Keep names exact; give well-known foreign names their usual Arabic spelling.
 - Write every number and year in digits, copied exactly from the card. You may round big figures down
   honestly but never change them. Say which event a figure belongs to.

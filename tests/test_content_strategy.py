@@ -462,7 +462,7 @@ def test_script_prompt_lists_series_with_closing_lines_and_asks_for_alt(env):
     story = {"id": 3, "hook": "h", "key_facts": "[]", "claims": "[]", "why_trending": "w"}
     prompt = write.build_prompt(cfg, story, cfg.brands[0])
     assert '"عالم التقنية" — closing line like: "' in prompt and "hook_title_alt" in prompt
-    assert "Gulf colloquial touch" in prompt and "Gulf-friendly" in prompt
+    assert "NO dialect words at all" in prompt and "professional Modern Standard Arabic" in prompt   # Phase 18
 
 
 def test_endcard_draws_the_rotated_cta(env, tmp_path):
@@ -479,7 +479,7 @@ def test_config_locks_the_niche_and_gulf_market(env):
     cfg, _, _ = env
     assert cfg.get("ranking.categories") == ["tech", "money", "wow-facts", "life-hack", "tools"]
     assert "US" not in cfg.get("discovery.trends.geos") and "SA" in cfg.get("discovery.trends.geos")
-    assert cfg.brands[0]["voice"]["name"] == "ar-SA-HamedNeural"
+    assert cfg.brands[0]["voice"]["name"] == "ar-JO-TaimNeural"
     series = cfg.brands[0]["series"]
     assert {"money", "tools"} <= set(series) and set(cfg.brands[0]["cta"]) >= {"default", series["tools"]}
     assert all(cat in youtube.CATEGORY_IDS for cat in cfg.get("ranking.categories"))

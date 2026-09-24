@@ -14,7 +14,7 @@ import httpx
 
 from src import formats, llm
 from src.config import Config
-from src.script import facts, similarity
+from src.script import facts, fusha, polish, similarity
 
 log = logging.getLogger("raij.script")
 
@@ -51,6 +51,8 @@ class Draft:
     series: str | None = None             # model's series pick; assemble keeps it only if it's a brand series
     hook_title_alt: str | None = None     # second headline for the A/B test across platforms (Phase 12)
     kind: str = "short"                   # short | long (src/formats.py)
+    model: str | None = None              # which LLM wrote it (Phase 18: weak fallbacks wrote dialect)
+    polish: dict[str, Any] | None = None  # editor pass result (Phase 18)
 
     @property
     def body_ar(self) -> str:
@@ -191,10 +193,15 @@ def draft(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str 
     def attempt(note: str) -> Draft:
         d = validate(llm.complete_json(cfg, build_prompt(cfg, story, brand, note, winners, kind), client=client),
                      lo, hi, kind=kind)
+        d.model = llm.last_model()
         bad = facts.unsupported(d.body_ar, story)
         if bad:
             raise DraftError(f"these numbers are not on the story card: {', '.join(bad)} — use only the "
                              f"card's figures", d)
+        slang = fusha.dialect_words(d.body_ar)
+        if slang:
+            raise DraftError(f"the script contains colloquial words ({', '.join(slang)}) — write professional "
+                             f"Modern Standard Arabic (الفصحى) only, no dialect anywhere, not even in the hook or CTA", d)
         return d
 
     try:
@@ -206,7 +213,7 @@ def draft(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str 
 
 def _row(d: Draft, sim: float | None, status: str, version: int, notes: dict[str, Any]) -> dict[str, Any]:
     look = {k: v for k, v in (("hook_title", d.hook_title), ("hook_title_alt", d.hook_title_alt),
-                              ("series", d.series)) if v}
+                              ("series", d.series), ("model", d.model), ("polish", d.polish)) if v}
     return {"version": version, "kind": d.kind, "body_ar": d.body_ar, "beats": d.beats,
             "description_en": d.description_en, "hashtags": d.hashtags, "similarity": sim, "status": status,
             "notes": {"words": d.words, **look, **notes}}
@@ -235,11 +242,13 @@ def write_script(cfg: Config, story: dict[str, Any], brand: dict[str, Any], edit
 
     for version in (1, 2):
         if not similarity.comparable(d.body_ar, source):
+            _polish(cfg, d, story, brand, client)
             out.versions.append(_row(d, None, "passed", version, {"gate": "skipped: source in another language"}))
             return out
         sim = round(similarity.containment(d.body_ar, source), 3)
         run, run_text = similarity.longest_run(d.body_ar, source)
         if sim <= threshold and run < max_run:
+            _polish(cfg, d, story, brand, client)
             out.versions.append(_row(d, sim, "passed", version, {"gate": "passed", "shared_run": run}))
             return out
         phrases = similarity.shared_phrases(d.body_ar, source)
@@ -264,6 +273,21 @@ def write_script(cfg: Config, story: dict[str, Any], brand: dict[str, Any], edit
             out.versions.append(_rejected(exc, 2, kind))
             return out
     return out
+
+
+def _polish(cfg: Config, d: Draft, story: dict[str, Any], brand: dict[str, Any], client: httpx.Client | None) -> None:
+    """Phase 18: the editor pass (professional فصحى + vocalized TTS text) on a draft that passed every gate.
+    Off with `script.polish: false`. The polished body must still pass the copy gate, else the draft stays."""
+    if not cfg.get("script.polish", True):
+        return
+    beats, notes = polish.polish(cfg, d.beats, story, brand, client=client)
+    source = story.get("transcript") or ""
+    body = "\n".join(b["text"] for b in beats)
+    if similarity.comparable(body, source) and similarity.containment(body, source) > cfg.get("script.similarity_threshold", 0.35):
+        notes = {**notes, "error": "polished text too close to the source — draft kept"}
+        beats = [{**b, "text": o["text"]} for b, o in zip(beats, d.beats)]
+    d.beats = beats
+    d.polish = notes
 
 
 # --- owner-written scripts (Phase 13) -----------------------------------------------------

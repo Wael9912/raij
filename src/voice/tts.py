@@ -41,10 +41,11 @@ def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess:
 
 
 def speech_text(beats: list[dict[str, Any]]) -> str:
-    """One sentence per beat, so the voice pauses between beats."""
+    """One sentence per beat, so the voice pauses between beats. A beat's vocalized `tts` text (Phase 18,
+    diacritics for the engine) is spoken when present; the plain `text` is what subtitles show."""
     lines = []
     for b in beats:
-        t = b["text"].strip()
+        t = str(b.get("tts") or b["text"]).strip()
         lines.append(t if _END_PUNCT.search(t) else t + ".")
     return "\n".join(lines)
 

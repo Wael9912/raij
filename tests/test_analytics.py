@@ -224,7 +224,7 @@ def test_service_plists_and_install(env, tmp_path, monkeypatch):
     monkeypatch.setattr(service, "linux", lambda: False)          # the launchd path, even when CI runs on Linux
     specs = service.plists(cfg)
     assert specs["com.raij.bot"]["KeepAlive"] is True and specs["com.raij.bot"]["ProgramArguments"][-1] == "bot"
-    assert specs["com.raij.daily"]["StartCalendarInterval"] == {"Hour": 7, "Minute": 0}
+    assert specs["com.raij.daily"]["StartCalendarInterval"] == {"Hour": 10, "Minute": 30}   # after Gemini's quota reset
     assert specs["com.raij.publish"]["StartInterval"] == 1800
     assert all(s["WorkingDirectory"] == str(cfg.root) and "/opt/homebrew/bin" in s["EnvironmentVariables"]["PATH"]
                for s in specs.values())
@@ -247,7 +247,7 @@ def test_systemd_units_for_linux_server(env):
     assert set(u) == set(service.units_names())
     assert "Restart=always" in u["raij-bot.service"] and "User=ubuntu" in u["raij-bot.service"]
     assert "run python -m src.main bot" in u["raij-bot.service"] and f"WorkingDirectory={cfg.root}" in u["raij-bot.service"]
-    assert "OnCalendar=*-*-* 07:00:00 Africa/Cairo" in u["raij-daily.timer"] and "Persistent=true" in u["raij-daily.timer"]
+    assert "OnCalendar=*-*-* 10:30:00 Africa/Cairo" in u["raij-daily.timer"] and "Persistent=true" in u["raij-daily.timer"]
     assert "OnUnitInactiveSec=30min" in u["raij-publish.timer"] and "Type=oneshot" in u["raij-publish.service"]
     cmds = []
 
@@ -300,11 +300,11 @@ def test_daily_due_once_per_local_day(env):
     from src.main import daily_due
     cfg, conn, _ = env
     cairo = ZoneInfo("Africa/Cairo")
-    assert daily_due(cfg, conn, datetime(2026, 9, 23, 6, 59, tzinfo=cairo)) is None
-    assert daily_due(cfg, conn, datetime(2026, 9, 23, 7, 5, tzinfo=cairo)) == "2026-09-23"
+    assert daily_due(cfg, conn, datetime(2026, 9, 23, 10, 29, tzinfo=cairo)) is None
+    assert daily_due(cfg, conn, datetime(2026, 9, 23, 10, 35, tzinfo=cairo)) == "2026-09-23"
     db.set_flag(conn, "last_daily_run", "2026-09-23")
     assert daily_due(cfg, conn, datetime(2026, 9, 23, 22, 0, tzinfo=cairo)) is None
-    assert daily_due(cfg, conn, datetime(2026, 9, 24, 7, 0, tzinfo=cairo)) == "2026-09-24"
+    assert daily_due(cfg, conn, datetime(2026, 9, 24, 11, 0, tzinfo=cairo)) == "2026-09-24"
 
 
 def test_tiktok_goes_to_telegram_and_failure_fails_the_post(env, monkeypatch):

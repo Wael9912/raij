@@ -567,7 +567,7 @@ def test_revoice_switches_to_alternate_voice(env, monkeypatch):
     fb = FakeBuild(monkeypatch, cfg)
     h = _handler(cfg, conn, FakeTelegram(), botmod.Deps(stock_client=httpx.Client()))
     h.handle(_cb("rv:1"))
-    assert fb.calls["voice"][0] == "ar-SA-HamedNeural"
+    assert fb.calls["voice"][0] == "ar-JO-TaimNeural"                 # Phase 18 default voice
 
 
 def test_failed_regeneration_puts_original_back(env, monkeypatch):

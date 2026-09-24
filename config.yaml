@@ -4,10 +4,10 @@ brands:
   - id: raij
     name: "رائج"
     language: ar
-    # Phase 12 (owner's call, D2/D3): Gulf-first market, MSA with a light Gulf touch, Saudi voice.
-    tone: "Gulf-friendly, Modern Standard Arabic with a light Gulf touch, warm and curious"
+    # Phase 18 (owner 2026-09-24): professional Standard Arabic only — no dialect touch anywhere (replaces D3).
+    tone: "professional Modern Standard Arabic (الفصحى), pan-Arab news-channel register, warm, clear and curious"
     voice:
-      name: ar-SA-HamedNeural
+      name: ar-JO-TaimNeural       # Phase 18 bench (script 43): Taim 94.5 % words read right, Shakir 94.4, Hamed 93.6, Laith 90.7
       alt: ar-EG-ShakirNeural      # used by the review bot's 🎙 Re-voice button
       rate: "+10%"                 # Shorts pacing; Arabic neural voices speak ~1.85 words/s at +0%
       pitch: "+0Hz"
@@ -152,6 +152,7 @@ script:
   max_words: 115
   similarity_threshold: 0.35       # above this vs source transcript → rewrite once, else reject
   max_shared_run: 8                # this many consecutive non-number words copied from the source → same (A5)
+  polish: true                     # Phase 18: editor pass → professional فصحى + fully vocalized TTS text (1 LLM call)
 
 voice:
   target_lufs: -14
@@ -227,7 +228,9 @@ llm:
                            gemini-flash-lite-latest, gemma-4-31b-it]
 
 schedule:
-  run_daily_at: "07:00"            # local time; launchd job com.raij.daily (install-services)
+  run_daily_at: "10:30"            # local time; launchd job com.raij.daily (install-services). Phase 18: moved from
+                                   # 07:00 — Gemini's free quotas reset at 07:00 UTC = 10:00 Cairo; at 07:00 the strong
+                                   # models were still exhausted from the day before and weak fallbacks wrote dialect.
   timezone: Africa/Cairo           # server (systemd) timer runs at run_daily_at in this zone
 
 analytics:

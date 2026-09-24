@@ -22,6 +22,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 13 Pick + produce from the bot | ✅ done | (this commit) | `/trending` pick list → format + platforms → `produce` job; `/topic`, `/script`, `/run`, `/jobs`; Wikipedia top-views source; manual picks outside the daily quota |
 | 15 Long-form | ✅ done | (this commit) | `long` format: 1920×1080, 2–5 min, chapters (cards + YouTube timestamps), thumbnail, calmer voice; live: #30 «gold» 3 min from a /topic. `ranking.long_top_n` = 1 automatic long/day |
 | 17 TikTok app | ✅ live (sandbox) 2026-09-24 04:13 | `24fe024`… | **first inbox drafts live:** #24 #25 #26 #31 #32 landed in the owner's TikTok inbox (captions in Telegram); TikTok's pending-drafts cap (`spam_risk_too_many_pending_share`, an HTTP **400**) stopped the 6th — now a limit (attempt given back). Sandbox keys in .env; production keys after the app review (SETUP.md §8 step 6) | `publish/tiktok_api.py`: Content Posting API, **inbox mode** (draft in the owner's TikTok inbox + caption to Telegram; owner posts from the app) now, `direct` after TikTok's audit; `tiktok-auth` (Desktop Login Kit, loopback 127.0.0.1:8471, hex-PKCE); public privacy/terms at https://raij.dafatir.workers.dev (`deploy/site/`); SETUP.md §8 |
+| 18 Professional فصحى | ✅ 2026-09-24 | (this commit) | owner: "KSA accent and reading very bad — professional standard Arabic script and voice for all future products". Dialect gate (`script/fusha.py`), editor pass + full tashkeel for the TTS (`script/polish.py`, `script_polish.txt`), strict-MSA prompts, voice → `ar-JO-TaimNeural` (bench: 94.5 % words read right vs Hamed 93.6), daily run moved to 10:30 Cairo (after Gemini's quota reset — 07:00 runs got weak fallback models that wrote Egyptian dialect) |
 | 13b Post now | ✅ done | (2026-09-24) | audit "approved videos never all post": windows allow 4/day vs ~9 made/day + Meta keys missing + zombie job blocked the bot queue. `/post_now [ids]` (confirm tap) → `videos.notes.post_now` → `publish` job; `publish --now`; `publish.windows.per_window`; zombie-safe `jobs.alive` |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
@@ -324,6 +325,29 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   and `long_platforms` list both. Public pages for the developer portal: `deploy/site/` worker →
   https://raij.dafatir.workers.dev/{privacy,terms}. **Owner's part:** developer app (Desktop platform, Login Kit +
   Content Posting API, sandbox target user = own account) → paste `TIKTOK_CLIENT_KEY`/`SECRET` → `tiktok-auth`.
+
+- **Phase 18 — professional فصحى (2026-09-24, owner: "the KSA Arabic accent and reading is very bad … get a
+  professional Arabic standard script and voice for all future products"; replaces D3's "light Gulf touch"):**
+  *Diagnosis:* video #39's script (#45) was pure Egyptian dialect ("ليه الدولار مولع اليومين دول … ما هداش") and
+  #41 opened with Gulf "زين" — the strong Gemini models were 429 (quota) when they were written, so flash-lite/Gemma
+  wrote them; free quotas reset 07:00 UTC = 10:00 Cairo, i.e. *after* the 07:00 daily run. Scripts didn't record
+  their model. *Fixes:* (1) `schedule.run_daily_at` **10:30** Cairo; `llm.last_model()` → `scripts.notes.model`.
+  (2) Prompts: professional MSA, pan-Arab news register, **no dialect anywhere**, hamza/ة/ى orthography; brand
+  `tone` updated. (3) **Dialect gate** `fusha.dialect_words()` (Egyptian/Gulf/Levantine markers + the ش-negation,
+  clitics stripped; `_SAFE` words that also read as MSA never trigger) inside `write.draft()` → `DraftError` naming
+  the words → one rewrite. (4) **Editor pass** `polish.polish()` after the copy gate (`script.polish: true`, one
+  LLM call, prompt `script_polish`): each beat rewritten in professional فصحى **and fully vocalized** for the TTS;
+  accepted only if the beat count matches, digits unchanged and card-supported, no dialect, ≤ +30 % words; the
+  vocalized text must be the final text plus marks only (`fusha.same_letters`) → `beats[i].tts`; polished body
+  re-checked against the copy gate. LLM failure leaves the draft (`notes.polish.error`). Live on #45 (flash-lite,
+  strong models exhausted): all 5 beats converted, hamzas fixed, full tashkeel, dialect gone. (5) Voice:
+  `tts.speech_text()` speaks `tts` when present; `voice_script` strips diacritics from the returned words so
+  subtitles/SRT stay plain (`notes.tashkeel` = vocalized beats). (6) **Voice bench** `tools/voice_bench.py
+  --script N --voices … [--tashkeel] [--send]`: edge-tts → Gemini transcription → word accuracy, clips to Telegram.
+  Script 43 at +10 %: Taim (JO) 0.945 / 52 s, Shakir (EG) 0.944 / 47 s, Hamed (SA) 0.936 / 55 s, Laith (SY)
+  0.907 / 44 s; polished #45: Taim plain 0.913 → tashkeel 0.93, Hamed 0.93 both. Default → **ar-JO-TaimNeural**
+  (alt Shakir); the owner picks by ear from the clips sent. Owner-written scripts (`segment_script`) are not
+  polished (their text is verbatim). Videos #40–#43 (in review) predate the change.
 
 ## Next up
 

@@ -31,6 +31,7 @@ def env(tmp_path, monkeypatch):
     for key in ("GEMINI_API_KEY", "GROQ_API_KEY"):
         monkeypatch.setenv(key, "")
     cfg = load_config()
+    cfg.data["script"]["polish"] = False           # the Phase 18 editor pass has its own tests (test_fusha.py)
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
     yield cfg, conn, tmp_path

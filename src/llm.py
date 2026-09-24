@@ -46,6 +46,14 @@ def load_prompt(name: str, **values: str) -> str:
     return text
 
 
+_LAST: dict[str, str | None] = {"model": None}
+
+
+def last_model() -> str | None:
+    """Which model produced the most recent answer in this process (recorded in scripts.notes.model)."""
+    return _LAST["model"]
+
+
 def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, json_mode: bool) -> str:
     key = cfg.secret("GEMINI_API_KEY")
     if not key:
@@ -80,6 +88,7 @@ def _gemini(cfg: Config, client: httpx.Client, prompt: str, system: str | None, 
         except (KeyError, IndexError, ValueError):
             raise FetchError(f"Gemini {model} returned no candidates (blocked or empty)") from None
         log.debug("Gemini answered with %s", model)
+        _LAST["model"] = model
         return "".join(p.get("text", "") for p in parts if not p.get("thought"))
     raise last or FetchError("every Gemini model is out of quota this run")
 
