@@ -654,3 +654,17 @@ def test_runner_refuses_an_id_that_belongs_to_another_video(env):
     rows = {r["video_id"]: dict(r) for r in conn.execute("SELECT * FROM posts")}
     assert rows[1]["status"] == "published" and rows[2]["status"] == "failed" and "already video #1" in rows[2]["error"]
     assert dict(conn.execute("SELECT id, status FROM videos")) == {1: "published", 2: "approved"}
+
+
+def test_publish_only_given_videos(env):
+    """`publish --video ID`: just those approved videos, windows ignored, nothing else touched or finalized."""
+    cfg, conn, _ = env
+    _brand_platforms(cfg, ["youtube"])
+    for vid in (1, 2, 3):
+        _video(cfg, conn, vid=vid)
+    yt = Fake()
+    cfg.data["publish"]["windows"] = {"timezone": "UTC", "times": ["00:00"], "open_minutes": 1}
+    quiet = type("B", (), {"send_message": lambda self, chat, text, **kw: None})()
+    assert runner.publish(cfg, conn, platforms=_platforms(youtube=yt), client=httpx.Client(), bot=quiet, only=[2]) == 0
+    assert [c[2] for c in yt.calls] == [2]
+    assert dict(conn.execute("SELECT id, status FROM videos")) == {1: "approved", 2: "published", 3: "approved"}

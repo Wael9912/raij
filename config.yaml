@@ -198,8 +198,8 @@ publish:
     mode: inbox
     # Web platform (the portal insists on https): TikTok sends the code to this page on our site, which shows the
     # `tiktok-auth --code … --state …` command to run. Leave empty to use the Desktop loopback below instead.
-    redirect_uri: https://raij.dafatir.workers.dev/tiktok/callback
-    redirect_port: 8471            # Desktop platform only: http://127.0.0.1:8471/callback/
+    redirect_uri: ""               # empty → Desktop loopback below (the sandbox app only accepts 127.0.0.1:<port>)
+    redirect_port: 8471            # Desktop platform: http://127.0.0.1:8471/callback/
     scopes: [user.info.basic, video.upload]
     chunk_mb: 10
     privacy: PUBLIC_TO_EVERYONE    # direct mode only; must be among the creator-info options

@@ -95,7 +95,8 @@ def cmd_bot(cfg, conn, args) -> int:
 
 def cmd_publish(cfg, conn, args) -> int:
     from src.publish.runner import publish
-    return publish(cfg, conn, dry_run=args.dry_run, now=bool(getattr(args, "now", False)))
+    return publish(cfg, conn, dry_run=args.dry_run, now=bool(getattr(args, "now", False)),
+                   only=[int(v) for v in (getattr(args, "video", None) or [])] or None)
 
 
 def cmd_youtube_auth(cfg, conn, args) -> int:
@@ -478,6 +479,8 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "publish":
             p.add_argument("--now", action="store_true",
                            help="Ignore the posting windows: post every approved video to its connected platforms now")
+            p.add_argument("--video", action="append", metavar="ID",
+                           help="Only this approved video (repeatable); windows are ignored for it")
         if name == "discover":
             p.add_argument("--source", action="append", choices=["youtube", "reddit", "trends", "wiki", "rss"],
                            help="Only run this source (repeatable)")

@@ -161,25 +161,29 @@ def _link(name: str, res: Posted) -> str:
 
 
 def publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client: httpx.Client | None = None,
-            platforms: dict | None = None, bot=None, now: bool = False) -> int:
+            platforms: dict | None = None, bot=None, now: bool = False, only: list[int] | None = None) -> int:
     """One publisher at a time across processes (scheduled job + run-daily), so nothing uploads twice.
-    `now=True` (`publish --now`) ignores the posting windows for every eligible video."""
+    `now=True` (`publish --now`) ignores the posting windows for every eligible video; `only` (`publish --video ID`)
+    restricts the pass to those video ids (windows ignored for them too — the owner asked by id)."""
     if dry_run:
-        return _publish(cfg, conn, True, client, platforms, bot, now)
+        return _publish(cfg, conn, True, client, platforms, bot, now, only)
     try:
         with single(cfg.root, "publish"):
-            return _publish(cfg, conn, False, client, platforms, bot, now)
+            return _publish(cfg, conn, False, client, platforms, bot, now, only)
     except Busy as exc:
         log.info("Publish skipped: %s", exc)
         return 0
 
 
 def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx.Client | None,
-             platforms: dict | None, bot, now: bool = False) -> int:
+             platforms: dict | None, bot, now: bool = False, only: list[int] | None = None) -> int:
     platforms = platforms or PLATFORMS
     max_attempts = int(cfg.get("publish.max_attempts", 3))
     backoff = [float(h) for h in cfg.get("publish.retry_after_hours", [1, 6, 24])]
     videos = eligible(conn, cfg.get("publish.max_age_hours", 72))
+    if only:
+        videos = [v for v in videos if v["id"] in set(only)]
+        now = True
     missing = {name: check(cfg) for name, (check, _) in platforms.items()}
 
     if db.publishing_paused(conn):
@@ -312,7 +316,7 @@ def _publish(cfg: Config, conn: sqlite3.Connection, dry_run: bool, client: httpx
             db.set_flag(conn, f"quota_notice_{name}", today)
     if waiting:
         log.info("%d approved video(s) wait for a posting window — %s", waiting, _window_text(cfg, window, slot_taken))
-    closed = finalize(cfg, conn, cfg.get("publish.max_age_hours", 72), platforms=platforms)
+    closed = finalize(cfg, conn, cfg.get("publish.max_age_hours", 72), platforms=platforms) if not only else []
     notices += [f"🏁 #{vid} closed as {status} (older than {cfg.get('publish.max_age_hours', 72)} h)"
                 for vid, status in closed]
     if run_id is None:
