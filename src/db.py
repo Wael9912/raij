@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS stories (
     key_facts       TEXT,                           -- JSON array
     claims          TEXT,                           -- JSON array
     why_trending    TEXT,
+    media           TEXT,                           -- JSON: real pictures/videos found on the sources (Phase 20)
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS stories_candidate ON stories (candidate_id);
@@ -177,6 +178,7 @@ MIGRATIONS = [
     ("candidates", "format", "TEXT"),
     ("candidates", "wanted", "TEXT"),
     ("scripts", "kind", "TEXT NOT NULL DEFAULT 'short'"),
+    ("stories", "media", "TEXT"),                     # Phase 20: JSON list of source pictures/videos to show
 ]
 
 

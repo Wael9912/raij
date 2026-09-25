@@ -122,8 +122,13 @@ ffmpeg -hide_banner -encoders | grep libx264      # H.264 encoder must be presen
   overlaid by ffmpeg, so the slim Homebrew `ffmpeg` works. Check: `uv run pytest -q -k shaping`.
 - Channel font Cairo (variable, used at Black) is bundled in `assets/fonts/` (OFL — `OFL-Cairo.txt`).
   Optional: drop your own logo at `assets/brand/logo.png` (transparent PNG); otherwise a "رائج" wordmark is drawn.
-- Optional background music: drop CC0 tracks (mp3/m4a/wav) into `assets/music/`; they're ducked under the
-  voice automatically. With none, videos are voice-only.
+- Background music (Phase 20): `uv run python tools/fetch_music.py` downloads 16 Kevin MacLeod tracks (CC BY 4.0,
+  mirrored on archive.org), loudness-normalises them and writes `assets/music/pool.json` with moods; every video
+  takes a track matching its category and the credit line lands in the caption. Loose CC0 files dropped into
+  `assets/music/` still work (no credit line). Without either, videos are voice-only.
+- Real source media (Phase 20): pictures and clips from the story's own sources are fetched into `assets/source/`
+  (cache, pruned with the stock). YouTube clips need a **current yt-dlp** (pinned ≥ 2026.08 in pyproject: older
+  releases get HTTP 403 from YouTube); `uv sync` installs it.
 
 ---
 

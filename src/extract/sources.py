@@ -51,11 +51,28 @@ def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess:
 
 # --- articles ----------------------------------------------------------------
 
+_PAGES: dict[str, str] = {}
+_PAGE_CACHE = 48
+
+
+def clear_pages() -> None:
+    _PAGES.clear()
+
+
+def fetch_html(client: httpx.Client, url: str) -> str:
+    """A page's HTML, fetched once per process (the text extractor and the media finder both read it)."""
+    if url in _PAGES:
+        return _PAGES[url]
+    resp = request(client, "GET", url, retries=1, headers={"User-Agent": BROWSER_UA}, follow_redirects=True)
+    if len(_PAGES) >= _PAGE_CACHE:
+        _PAGES.pop(next(iter(_PAGES)))
+    _PAGES[url] = resp.text
+    return resp.text
+
+
 def article_text(client: httpx.Client, url: str) -> str:
     """Main text of a web article ('' if the page has none, e.g. a paywall or video page)."""
-    resp = request(client, "GET", url, retries=1, headers={"User-Agent": BROWSER_UA},
-                   follow_redirects=True)
-    text = trafilatura.extract(resp.text, url=url, include_comments=False, include_tables=False)
+    text = trafilatura.extract(fetch_html(client, url), url=url, include_comments=False, include_tables=False)
     return (text or "").strip()
 
 

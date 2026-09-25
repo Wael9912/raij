@@ -20,6 +20,7 @@ data/*
 # Assets (fonts are committed; everything else is generated/cached)
 assets/music/*
 assets/stock/*
+assets/source/*
 assets/generated/*
 !assets/*/.gitkeep
 

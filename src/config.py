@@ -11,9 +11,10 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The assembler may only ingest media from these directories (transformation guardrail): licensed
-# stock footage, our own generated voice/subtitles, and CC0 music. Never source videos.
-ALLOWED_MEDIA_SUBDIRS = ("assets/stock", "assets/generated", "assets/music")
+# The assembler may only ingest media from these directories (guardrail against stray inputs): licensed stock
+# footage, our own generated voice/subtitles, the credited music pool, and — since Phase 20, the owner's call —
+# pictures/footage fetched from the story's own sources into assets/source (credited on the frame + caption).
+ALLOWED_MEDIA_SUBDIRS = ("assets/stock", "assets/generated", "assets/music", "assets/source")
 ALLOWED_MEDIA_DIRS = tuple(ROOT / d for d in ALLOWED_MEDIA_SUBDIRS)
 
 

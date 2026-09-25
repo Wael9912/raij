@@ -268,9 +268,12 @@ def test_assemble_end_to_end(env, monkeypatch):
                                                                       ("202", 1, "Pexels License")]
     notes = json.loads(row["notes"])
     assert notes["rate"] == "+10%" and notes["music"] == "assets/music/calm.mp3"
-    assert row["duration_s"] == 4.6                                    # 2.6s voice + 2s end card
+    assert row["duration_s"] == 5.4                                    # 0.8s cover + 2.6s voice + 2s end card
     cmd = " ".join(ff.cmds[0])
     assert "sidechaincompress" in cmd and "pexels_101.mp4" in cmd and "subs.txt" in cmd
+    assert "cover.jpg" in cmd and "adelay=800" in cmd                  # the cover opens; the voice waits for it
+    assert notes["cover"] == "assets/generated/video/1.cover.jpg" and (tmp / notes["cover"]).exists()
+    assert notes["media"]["real"] == 0 and notes["media"]["stock"] == 2
     assert "logo.png" in cmd and "xfade" in cmd and "hook.txt" not in cmd        # no hook title on this script
     assert not (tmp / "assets/generated/video/1").exists()             # subtitle PNGs cleaned up
 

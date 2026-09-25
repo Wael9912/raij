@@ -170,6 +170,38 @@ video:
   progress_bar: true               # thin yellow bar across the top
   stock_keep_days: 14              # cached stock clips unused this long are deleted after a render
   faceless: true                   # skip stock clips whose previews show a face (public figures get a licensed photo)
+  cover_seconds: 0.8               # cover card (hero picture + title) opens every video = the first frame/thumbnail
+  music_volume: 0.28               # music bed under the voice (also side-chain ducked while the voice speaks)
+
+# Real pictures/footage of the story (Phase 20, owner: "main subject must be real pics and vids; free clips only
+# fill the time"). extract records what the source pages carry (stories.media); assemble fetches into
+# assets/source/<story>/, frames it with a "Source: domain" credit, and uses it before any stock clip.
+media:
+  enabled: true
+  max_items: 10                    # pictures + clips kept per story
+  max_pages: 4                     # source pages scanned for media
+  max_images_per_page: 6
+  min_image_px: 400                # short side; smaller pictures are thumbnails/icons (800×450 leads pass)
+  reuse: 1                         # when the real items run out, each may return this many times before stock
+  youtube_search: true             # yt-dlp search for a video about the story when the sources embed none
+  youtube_results: 2               # search videos kept (each yields up to clips_per_video cuts)
+  youtube_search_limit: 6
+  max_video_seconds: 900           # longer videos aren't downloaded (≤720p, deleted after cutting)
+  clip_seconds: 10                 # length of each cut taken from a source video
+  clips_per_video: 3
+
+# Background music (Phase 20): assets/music/pool.json (tools/fetch_music.py) lists credited tracks with moods;
+# a video takes a track matching its category/series (long videos: calm). Credit goes into every caption.
+music:
+  enabled: true
+  moods:
+    tech: [tech, upbeat]
+    money: [money, calm]
+    wow-facts: [wow-facts, energetic]
+    life-hack: [life-hack, upbeat]
+    tools: [tools, upbeat]
+    long: [calm]
+    default: [default]
 
 pipeline:
   max_age_days: 2                  # a pick still not reviewed after this is expired (stale trend, saves quota)

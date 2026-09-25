@@ -4,8 +4,8 @@ then overlays (subtitles, animated hook title, channel logo, progress bar); voic
 music ducked under it.
 
 Guardrail: every media input is resolved (symlinks followed) and must sit inside
-config.ALLOWED_MEDIA_SUBDIRS under the repo root — licensed stock, our generated assets, CC0
-music. Anything else (e.g. a source video) makes the render refuse to start.
+config.ALLOWED_MEDIA_SUBDIRS under the repo root — licensed stock, our generated assets, the credited
+music pool and the story's fetched source media (assets/source, Phase 20). Anything else refuses to render.
 """
 from __future__ import annotations
 
@@ -70,6 +70,8 @@ class Plan:
     max_seconds: float = 60.0             # the format's cap (formats.Format.max_seconds)
     overlays: list[Path] = field(default_factory=list)   # more full-frame ffconcat PNG lists (chapter cards)
     logo_xy: tuple[int, int] = LOGO_XY
+    voice_delay: float = 0.0              # seconds the voice starts after t=0 (the cover card plays first)
+    music_volume: float = 0.28
     extra: dict = field(default_factory=dict)
 
     @property
@@ -77,12 +79,14 @@ class Plan:
         return round(sum(s.seconds for s in self.segments) + self.endcard_seconds, 3)
 
 
-def segments_for(beats: list[dict], clips_per_beat: list[list[Path]], voice_seconds: float) -> list[Segment]:
-    """Each beat's footage runs from its start to the next beat's start (first from 0, last to the
-    end of the voice), split evenly across that beat's clips. Image files become stills."""
+def segments_for(beats: list[dict], clips_per_beat: list[list[Path]], voice_seconds: float,
+                 lead: float = 0.0) -> list[Segment]:
+    """Each beat's footage runs from its start to the next beat's start (first from `lead` — the cover card
+    fills [0, lead) — last to the end of the voice), split evenly across that beat's clips. Image files become
+    stills."""
     segs = []
     for i, (beat, clips) in enumerate(zip(beats, clips_per_beat)):
-        start = 0.0 if i == 0 else beat["start"]
+        start = lead if i == 0 else beat["start"]
         end = beats[i + 1]["start"] if i + 1 < len(beats) else voice_seconds
         span = max(end - start, 0.5)
         for c in clips:
@@ -163,15 +167,16 @@ def command(cfg: Config, plan: Plan) -> list[str]:
     voice_idx = n
     n += 1
     fade_at = max(plan.total - 1.5, 0)
+    delay = f"adelay={int(round(plan.voice_delay * 1000))}:all=1," if plan.voice_delay > 0 else ""
     if plan.music:
         inputs += ["-stream_loop", "-1", "-i", str(guard(cfg, plan.music))]
-        filters.append(f"[{voice_idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,asplit=2[vo][sc]")
-        filters.append(f"[{n}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume=0.35[mus]")
+        filters.append(f"[{voice_idx}:a]{delay}aformat=sample_rates=48000:channel_layouts=stereo,asplit=2[vo][sc]")
+        filters.append(f"[{n}:a]aformat=sample_rates=48000:channel_layouts=stereo,volume={plan.music_volume}[mus]")
         filters.append("[mus][sc]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[duck]")
         filters.append(f"[vo][duck]amix=inputs=2:duration=longest:normalize=0,"
                        f"atrim=duration={plan.total},afade=t=out:st={fade_at}:d=1.5[aout]")
     else:
-        filters.append(f"[{voice_idx}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
+        filters.append(f"[{voice_idx}:a]{delay}aformat=sample_rates=48000:channel_layouts=stereo,"
                        f"apad=whole_dur={plan.total}[aout]")
 
     return [ffmpeg, "-hide_banner", "-nostats", "-y", *inputs,

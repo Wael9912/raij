@@ -21,7 +21,8 @@ from src import db, formats, llm
 from src.config import Config
 from src.discover.common import make_client
 from src.discover.manual import title_of
-from src.extract.sources import ExtractError, RunCmd, SourceText, run_cmd, source_text
+from src.extract import media
+from src.extract.sources import ExtractError, RunCmd, SourceText, clear_pages, run_cmd, source_text
 
 log = logging.getLogger("raij.extract")
 
@@ -150,6 +151,7 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
         return 0
 
     run_id = db.start_run(conn, "extract")
+    clear_pages()                                           # page HTML is cached only within one run
     min_chars = cfg.get("extract.min_source_chars", 120)
     cards, failed, retry = [], [], []
     own_client = client is None
@@ -195,19 +197,26 @@ def extract(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False, client
                     failed.append({"id": row["id"], "error": f"after {max_attempts} attempts: {msg}"})
                 continue
             max_t = cfg.get("extract.max_transcript_chars", 20000)
+            try:                                            # real pictures/footage to show (Phase 20); never fatal
+                found = media.collect(cfg, client, row, src.urls, run=run)
+            except Exception as exc:
+                log.warning("#%d: source media lookup failed: %s", row["id"], exc)
+                found = []
             story_id = conn.execute(
                 "INSERT INTO stories (candidate_id, transcript, transcript_src, sources, hook, key_facts, "
-                "claims, why_trending) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "claims, why_trending, media) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row["id"], src.text[:max_t], src.src, json.dumps(src.urls, ensure_ascii=False), card["hook"],
                  json.dumps(card["key_facts"], ensure_ascii=False), json.dumps(card["claims"], ensure_ascii=False),
-                 card["why_trending"]),
+                 card["why_trending"], json.dumps(found, ensure_ascii=False)),
             ).lastrowid
             conn.execute("UPDATE candidates SET status = 'extracted', category = coalesce(category, ?) WHERE id = ?",
                          (card.get("category"), row["id"]))
             conn.commit()
             cards.append({"story_id": story_id, "candidate_id": row["id"], "title": row["title"],
-                          "transcript_src": src.src, "source_chars": len(src.text), "sources": src.urls, **card})
-            log.info("#%d → story %d (%s, %d chars): %s", row["id"], story_id, src.src, len(src.text), card["hook"])
+                          "transcript_src": src.src, "source_chars": len(src.text), "sources": src.urls,
+                          "media": len(found), **card})
+            log.info("#%d → story %d (%s, %d chars, %d media): %s", row["id"], story_id, src.src, len(src.text),
+                     len(found), card["hook"])
     finally:
         if own_client:
             client.close()

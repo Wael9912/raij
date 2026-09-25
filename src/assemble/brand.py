@@ -16,7 +16,7 @@ from typing import Any
 from src import textshape
 
 textshape.ensure()                                   # before PIL's font module loads
-from PIL import Image, ImageDraw, ImageFont  # noqa: E402
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps  # noqa: E402
 
 from src.config import ROOT  # noqa: E402
 
@@ -148,9 +148,11 @@ def _title_block(title: str, series: str | None, max_px: int = 960) -> Image.Ima
 
 
 def hook_sequence(title: str, series: str | None, out_dir: Path, seconds: float,
-                  fps: int = 30, center_y: int | None = None, frame: tuple[int, int] = (W, H)) -> Path:
-    """The hook title popping in at the start and fading out by `seconds`; returns an ffconcat list.
-    The stream ends there and the overlay passes the video through (eof_action=pass)."""
+                  fps: int = 30, center_y: int | None = None, frame: tuple[int, int] = (W, H),
+                  delay: float = 0.0) -> Path:
+    """The hook title popping in at `delay` (after the cover card, Phase 20) and fading out by
+    `delay + seconds`; returns an ffconcat list. The stream ends there and the overlay passes the video
+    through (eof_action=pass)."""
     W, H = frame                                                       # noqa: N806
     center_y = center_y if center_y is not None else (820 if H > W else int(H * 0.42))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -171,7 +173,8 @@ def hook_sequence(title: str, series: str | None, out_dir: Path, seconds: float,
     step = 1 / fps
     pop = [(0.55, 0.2), (0.75, 0.5), (0.92, 0.8), (1.06, 1.0), (1.03, 1.0), (1.0, 1.0)]   # scale, alpha
     fade = [0.75, 0.5, 0.25]
-    entries = [(frame(f"in{i}", s, a), step) for i, (s, a) in enumerate(pop)]
+    entries = [(blank, delay)] if delay > 0 else []
+    entries += [(frame(f"in{i}", s, a), step) for i, (s, a) in enumerate(pop)]
     hold = seconds - step * (len(pop) + len(fade))
     if hold > 0:
         entries.append((frame("hold", 1.0, 1.0), hold))
@@ -182,6 +185,56 @@ def hook_sequence(title: str, series: str | None, out_dir: Path, seconds: float,
     body = "ffconcat version 1.0\n" + "".join(f"file '{p.name}'\nduration {d:.3f}\n" for p, d in entries)
     lst.write_text(body + f"file '{entries[-1][0].name}'\n", encoding="utf-8")
     return lst
+
+
+def cover(brand: dict[str, Any], out: Path, title: str | None, series: str | None = None,
+          photo: Path | None = None, frame: tuple[int, int] = (W, H), with_logo: bool = True) -> Path:
+    """The cover card (Phase 20): the story's real hero picture filling the frame, darkened towards the bottom,
+    the hook title big and the series badge above it, the logo top-right. Opens every video for
+    `video.cover_seconds` (so the first frame — what TikTok/Instagram/Telegram show before playing — *is* the
+    thumbnail) and, at 1280×720, is the YouTube thumbnail of long videos. Without a photo: the brand ink."""
+    W, H = frame                                                       # noqa: N806
+    if photo and Path(photo).exists():
+        img = ImageOps.exif_transpose(Image.open(photo)).convert("RGB")
+        base = ImageOps.fit(img, (W, H), Image.LANCZOS)
+        if img.width / img.height > 1.4 and H > W:
+            # A wide news photo cropped to 9:16 loses its subject: show it whole over a blurred fill instead.
+            bg = ImageEnhance.Brightness(base.filter(ImageFilter.GaussianBlur(40))).enhance(0.5)
+            fg = ImageOps.contain(img, (W, int(H * 0.6)))
+            bg.paste(fg, ((W - fg.width) // 2, int(H * 0.22)))
+            base = bg
+    else:
+        base = Image.new("RGB", (W, H), INK[:3])
+    shade = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(shade).rectangle((0, int(H * 0.45), W, H), fill=170)
+    shade = shade.filter(ImageFilter.GaussianBlur(90 if H > W else 60))
+    base = Image.composite(ImageEnhance.Brightness(base).enhance(0.35), base, shade)
+    canvas = base.convert("RGBA")
+    max_px = 980 if H > W else int(W * 0.8)
+    if title:
+        size = 132 if H > W else 96
+        while size > TITLE_MIN_SIZE and len(wrap(title, size, max_px)) > 2:
+            size -= 6
+        lines = wrap(title, size, max_px)[:2]
+        blocks = [text_image(line, size, stroke=max(6, size // 12)) for line in lines]
+        gap = 18
+        total = sum(b.height for b in blocks) + gap * (len(blocks) - 1)
+        y = int(H * (0.70 if H > W else 0.66)) - total // 2
+        if series:
+            badge = pill(series, 56 if H > W else 44)
+            canvas.alpha_composite(badge, ((W - badge.width) // 2, y - badge.height - 26))
+        for b in blocks:
+            canvas.alpha_composite(b, ((W - b.width) // 2, y))
+            y += b.height + gap
+    elif series:
+        badge = pill(series, 64)
+        canvas.alpha_composite(badge, ((W - badge.width) // 2, int(H * 0.7)))
+    if with_logo:
+        mark = logo(brand, height=84 if H > W else 64)
+        canvas.alpha_composite(mark, (W - mark.width - 48, 150 if H > W else 40))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    canvas.convert("RGB").save(out, "JPEG", quality=90)
+    return out
 
 
 def endcard(brand: dict[str, Any], out: Path, series: str | None = None, cta: str | None = None,

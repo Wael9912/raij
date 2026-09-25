@@ -193,6 +193,28 @@ def parent_line(ctx: dict[str, Any]) -> str:
     return f"{line}\n✏️ {note}" if what == "script edited" and note else line
 
 
+def media_line(notes: dict[str, Any]) -> str:
+    """What the picture is made of (Phase 20): real source photos/clips vs stock, and the music track — so the
+    owner sees at a glance whether the main subject is real before watching."""
+    m = notes.get("media")
+    if not isinstance(m, dict):
+        return ""
+    bits = []
+    if m.get("photos"):
+        bits.append(f"🖼 {m['photos']} source photo{'s' if m['photos'] != 1 else ''}")
+    if m.get("clips"):
+        bits.append(f"🎞 {m['clips']} source clip{'s' if m['clips'] != 1 else ''}")
+    if not bits:
+        bits.append("⚠️ no source media (stock only)")
+    if m.get("stock"):
+        bits.append(f"{m['stock']} stock")
+    line = " · ".join(bits)
+    music = next((c for c in notes.get("credits") or [] if str(c).startswith("Music: ")), None)
+    if music:
+        line += f"\n🎵 {music[len('Music: '):]}"
+    return line
+
+
 def caption(ctx: dict[str, Any]) -> str:
     notes = json.loads(ctx.get("notes") or "{}")
     tags = " ".join(json.loads(ctx.get("hashtags") or "[]"))
@@ -202,8 +224,8 @@ def caption(ctx: dict[str, Any]) -> str:
     head = f"🎬 #{ctx['id']} · {duration_text(ctx.get('duration_s'))}" + (f" · {series}" if series else "")
     if str(ctx.get("kind") or "short") == "long":
         head += " · 🎬 Long"
-    parts = [head, parent_line(ctx), title_of(ctx), why_line(ctx), ctx.get("description_en") or "", tags,
-             f"Trending item: {ctx['title']}" if ctx.get("title") else ""]
+    parts = [head, parent_line(ctx), media_line(notes), title_of(ctx), why_line(ctx), ctx.get("description_en") or "",
+             tags, f"Trending item: {ctx['title']}" if ctx.get("title") else ""]
     if domains:
         parts.append("Sources: " + ", ".join(domains))
     for credit in notes.get("credits") or []:

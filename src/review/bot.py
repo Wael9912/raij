@@ -615,7 +615,7 @@ class Handler:
         exclude = set()
         if new_broll:
             exclude = {f"{m['provider']}:{m['id']}" for m in json.loads(ctx.get("broll_manifest") or "[]")
-                       if m.get("provider") != "wikimedia"}
+                       if m.get("provider") not in ("wikimedia", "source")}   # real media stays; stock changes
         client = d.stock_client or make_client()
         try:
             out = assemble_video(cfg, video, client, run=d.render_run, exclude=exclude)

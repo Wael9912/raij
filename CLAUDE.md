@@ -24,6 +24,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 17 TikTok app | ✅ live (sandbox) 2026-09-24 04:13 | `24fe024`… | **first inbox drafts live:** #24 #25 #26 #31 #32 landed in the owner's TikTok inbox (captions in Telegram); TikTok's pending-drafts cap (`spam_risk_too_many_pending_share`, an HTTP **400**) stopped the 6th — now a limit (attempt given back). Sandbox keys in .env; production keys after the app review (SETUP.md §8 step 6) | `publish/tiktok_api.py`: Content Posting API, **inbox mode** (draft in the owner's TikTok inbox + caption to Telegram; owner posts from the app) now, `direct` after TikTok's audit; `tiktok-auth` (Desktop Login Kit, loopback 127.0.0.1:8471, hex-PKCE); public privacy/terms at https://raij.dafatir.workers.dev (`deploy/site/`); SETUP.md §8 |
 | 18 Professional فصحى | ✅ 2026-09-24 | (this commit) | owner: "KSA accent and reading very bad — professional standard Arabic script and voice for all future products". Dialect gate (`script/fusha.py`), editor pass + full tashkeel for the TTS (`script/polish.py`, `script_polish.txt`), strict-MSA prompts, voice → `ar-JO-TaimNeural` (bench: 94.5 % words read right vs Hamed 93.6), daily run moved to 10:30 Cairo (after Gemini's quota reset — 07:00 runs got weak fallback models that wrote Egyptian dialect) |
 | 13b Post now | ✅ done | (2026-09-24) | audit "approved videos never all post": windows allow 4/day vs ~9 made/day + Meta keys missing + zombie job blocked the bot queue. `/post_now [ids]` (confirm tap) → `videos.notes.post_now` → `publish` job; `publish --now`; `publish.windows.per_window`; zombie-safe `jobs.alive` |
+| 20 Real media + music + cover | ✅ 2026-09-25 | (this commit) | owner: "products full of nonsense visuals — main subject must be real pics/vids from the source, free clips only fill time; add music, intro hook, thumbnail shown before playing". `extract/media.py` finds source pictures/videos (og:image, in-article images, embedded/YouTube video, YouTube search) → `stories.media`; `assemble/sourcemedia.py` fetches + frames them with a "Source: domain" credit; real first, stock fills; cover card (hero + title) = first frame + `<id>.cover.jpg` + long thumbnail; CC BY music pool (`tools/fetch_music.py`, 16 tracks) with credit in captions. Live on a DB copy: Muse-glasses Short 9 real / 0 stock, onager long 6 real (+reuse) / 16 stock |
 | 19 Performance audit | ✅ 2026-09-24 | (this commit) | the 10:30 daily run took 4 h 16 min because the **Mac slept** (lid closed 10:33 → 14:21; Power Nap woke it 45 s every 16 min without network): 5/8 picks lost to ConnectError, a cut-off edge-tts stream (22/99 words) was rendered as #46 and sent for review. Fixes: `src/power.py` caffeinate while pipeline commands run, `tts.check_complete` (Truncated), outages never count as attempts, **same-day catch-up** (`publish --catch-up` every 30 min → `produce` on leftovers, `pipeline.catch_up_hours` 2), stale `running` runs closed, `videos.notes.timing` per assemble step. Encoder benchmark: libx264 medium ≈ 6× real time on the M3, videotoolbox no faster — not the bottleneck |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
@@ -381,6 +382,48 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   of ~5, a long video in ~3 instead of ~16 — check `videos.notes.timing.render` on the next run.
   Owner options not done here: `sudo pmset repeat wakeorpoweron MTWRFSU 10:28:00` (wake for the daily run),
   keep the lid open/on AC while it runs, or a hosted fallback.
+
+- **Phase 20 — real media, music, cover (2026-09-25, owner: "the products are nice but full of nonsense content,
+  specially the visual. It must carry real pics or videos from the source; free clips only to fill the time.
+  Also add music, an intro hook, and the thumbnail shown before playing"):** this *reverses* the Phase 6
+  "no source media" guardrail on the owner's decision — publishers' photos and footage are used, credited on the
+  frame ("Source: domain") and in every caption ("Media: domains"); copyright/Content-ID claims are the owner's
+  accepted risk. *Extract:* `extract/media.py` — `page_media()` parses each source page (og:image/twitter/JSON-LD
+  lead image, in-article `<img>` with the largest srcset candidate, `og:video`/`<video>`/JSON-LD VideoObject,
+  YouTube iframes/embeds; avatars/logos/icons/pixels dropped by url/class/alt/`sizes`/width/`display:none`
+  heuristics, deduped by path — YouTube by full URL since the id is the query) and `yt_search()` (yt-dlp flat
+  `ytsearchN`, keyless, 20 s–15 min, title must name the topic via `manual.relevant`, most viewed first; query =
+  the trend's first headline, the owner's topic text, else the title). Order: own/embedded video, lead image,
+  other images, search hits; `media.max_items` 10 → `stories.media` JSON (`db.MIGRATIONS`). Page HTML is cached
+  per run (`sources.fetch_html`, cleared by `clear_pages()` — a stale cache once fed a test the wrong page).
+  *Assemble:* `sourcemedia.prepare()` → `assets/source/<story>/` (new `ALLOWED_MEDIA_SUBDIRS` entry): images
+  validated with Pillow (short side ≥ `media.min_image_px` 400, aspect 0.35–3; rejects remembered as `skip_<id>`)
+  and composed full-frame via `portrait.compose` (uncropped over blurred fill + credit); direct videos cut by
+  ffmpeg straight from the URL; YouTube downloaded ≤720p (**yt-dlp pinned ≥ 2026.08.19** — 2026.07 got 403 on
+  every video; search still worked), `clips_per_video` 3 cuts of `clip_seconds` 10 at 20/45/70 %, full file
+  deleted; clips re-encoded into the frame (same orientation → fill/crop, other → contained over blurred fill) with
+  the credit PNG burnt in; stills and clips interleaved. `runner.assign_real()` spreads items over beats (hook
+  first, one per beat, then second slots; when the pool is dry each item may return `media.reuse` = 1 time, never
+  twice in a beat); stock only for the remaining slots; a `person` beat still opens on its Commons photo. Stories
+  extracted before this phase get `ensure_media()` at assemble time (stored back). "New b-roll" keeps `source`
+  items (only stock ids are excluded). Faces are *not* filtered on real media (that's the point). *Cover:*
+  `brand.cover()` — hero (first real still, else Commons photo, else brand ink) fit to frame (wide photos shown
+  whole over blurred fill), bottom shade, title (2 lines) + series badge, logo top-right in the JPEG variant —
+  plays for `video.cover_seconds` 0.8 as the first segment (so the first frame shown before playing *is* the
+  thumbnail), saved as `<id>.cover.jpg` (`notes.cover`), and at 1280×720 it is the long video's YouTube
+  thumbnail (`thumbnail.make` only when no hero). The voice is delayed by the cover (`render.Plan.voice_delay` →
+  `adelay`), words/beats/chapters shift by `lead`, hook title pops in after it (`hook_sequence(delay=)`), the end
+  card shrinks (≥1 s) so a Short stays ≤ 60 s. *Music:* `assemble/music.py` — `assets/music/pool.json` from
+  `tools/fetch_music.py` (16 Kevin MacLeod tracks, CC BY 4.0, from archive.org — incompetech's direct links are
+  dead — normalised to −20 LUFS); `music.moods` per category/series (long → calm), rotated by video id;
+  `video.music_volume` 0.28 + the existing side-chain duck; credit "Music: … CC BY 4.0" in `notes.credits` →
+  captions. *Review:* caption line `🖼 n source photos · 🎞 n source clips · n stock` (or `⚠️ no source media`)
+  + `🎵 track`; `notes.media` = {real, photos, clips, stock, found, domains}; `notes.timing.media`.
+  *Live (DB copy, 2026-09-25 08:45):* #50's story (The Verge) → 6 images + 2 YouTube search videos; render used
+  9 real items, 0 stock, 42 s media step; #52 (onager, long, CNN Arabic) → a CNN mp4 clip ×3, 3 photos (small
+  related-story thumbnails rejected by pixel size), 16 stock; cover/thumbnail on the CNN photo. Google-analytics
+  `collect` pixel slipped through the parser once (now in SKIP). Stock filler is still weak for animals
+  ("young animal close up" → raccoon) — real media reuse covers most of it.
 
 ## Next up
 
