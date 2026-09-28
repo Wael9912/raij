@@ -256,7 +256,9 @@ def rank(cfg: Config, conn: sqlite3.Connection, dry_run: bool = False,
         r.update(status="selected", selected_at=stamp)
     # One (ranking.long_top_n) of today's automatic picks also gets a 2–5 min version, unless one exists today.
     long_have = sum(1 for r in auto_already if "long" in formats.wanted_formats(r))
-    for r in pick_long(chosen, int(cfg.get("ranking.long_top_n", 0)) - long_have):
+    long_days = cfg.get("ranking.long_weekdays")           # Phase 21: long explainers only on these weekdays
+    long_n = int(cfg.get("ranking.long_top_n", 0)) if long_days is None or local.weekday() in long_days else 0
+    for r in pick_long(chosen, long_n - long_have):
         brand = (cfg.brands or [{}])[0]
         wanted = formats.encode(["short", "long"], list(brand.get("platforms") or []), kind="trend", by="auto")
         conn.execute("UPDATE candidates SET wanted = ? WHERE id = ?", (wanted, r["id"]))

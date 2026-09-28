@@ -99,6 +99,9 @@ def post_text(ctx: dict[str, Any], cfg: Any = None) -> PostText:
     if domains:
         tail.append("المصادر: " + "، ".join(domains))
     tail += [f"📷 {c}" for c in notes.get("credits") or []]
+    look = next((b for b in (getattr(cfg, "brands", None) or []) if b.get("id") == ctx.get("brand_id")),
+                (getattr(cfg, "brands", None) or [{}])[0] if cfg is not None else {})
+    tail += [str(look.get(k)).strip() for k in ("byline", "disclaimer") if str(look.get(k) or "").strip()]
 
     def build(head: str) -> str:
         parts = [head, hook_ar if hook_ar and hook_ar != head else ""] + tail

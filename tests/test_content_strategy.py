@@ -66,7 +66,8 @@ def test_classify_prompt_lists_all_categories_and_the_audience(env):
         classify(cfg, [{"id": 1, "source": "rss", "title": "t", "raw_json": "{}"}],
                  client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert "Gulf viewers" in prompts[0]
-    assert "tech, money, wow-facts, life-hack, tools, news-lite, sports, culture, political" in prompts[0]
+    assert ("economy, energy, trade, markets, megaprojects, tech, wow-facts, news-lite, sports, culture, political"
+            in prompts[0])
     assert "audience_fit" in prompts[0] and "ad_safe" in prompts[0]
 
 
@@ -128,9 +129,9 @@ def test_rank_stores_fit_fields_and_rejects_unsafe(env, monkeypatch):
         prompt = json.loads(req.content)["contents"][0]["parts"][0]["text"]
         ids = {it["title"]: it["id"] for it in json.loads(prompt.split("Items (JSON):\n")[1].split("\n\nRespond")[0])}
         reply = {"items": [
-            {"id": ids["safe"], "retellable": True, "category": "tech", "topic": "a", "reason": "r",
+            {"id": ids["safe"], "retellable": True, "category": "economy", "topic": "a", "reason": "r",
              "audience_fit": 4, "evergreen": True, "ad_safe": True, "format": "explainer"},
-            {"id": ids["crash"], "retellable": True, "category": "tech", "topic": "b", "reason": "r",
+            {"id": ids["crash"], "retellable": True, "category": "economy", "topic": "b", "reason": "r",
              "audience_fit": 5, "ad_safe": False, "format": "story"}]}
         return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps(reply)}]}}]})
 
@@ -277,12 +278,12 @@ def test_dry_run_reports_the_window(env, caplog):
 # --- SEO: caption, title, tags, playlists -------------------------------------------
 
 def _ctx(**over):
-    base = {"id": 7, "notes": json.dumps({"series": "عالم التقنية", "credits": []}),
+    base = {"id": 7, "notes": json.dumps({"series": "الذهب والأسواق", "credits": []}),
             "script_notes": json.dumps({"hook_title": "عطل مفاجئ يضرب ميتا", "hook_title_alt": "لماذا توقف فيسبوك؟"},
                                        ensure_ascii=False),
             "beats": json.dumps([{"role": "hook", "text": "هل توقف فيسبوك اليوم؟"}], ensure_ascii=False),
             "description_en": "Meta went down.", "hashtags": json.dumps(["#ميتا", "#tech"]),
-            "sources": json.dumps(["https://www.skynewsarabia.com/a"]), "category": "tech"}
+            "sources": json.dumps(["https://www.skynewsarabia.com/a"]), "category": "markets"}
     base.update(over)
     return base
 
@@ -291,13 +292,16 @@ def test_post_text_has_arabic_first_lines_series_seo_tags_and_variant_b(env):
     cfg, _, _ = env
     text = post_text(_ctx(), cfg)
     assert text.title == "عطل مفاجئ يضرب ميتا" and text.title_alt == "لماذا توقف فيسبوك؟"
-    assert text.series == "عالم التقنية" and text.hook_ar == "هل توقف فيسبوك اليوم؟"
+    assert text.series == "الذهب والأسواق" and text.hook_ar == "هل توقف فيسبوك اليوم؟"
     assert text.caption.split("\n\n")[:2] == ["عطل مفاجئ يضرب ميتا", "هل توقف فيسبوك اليوم؟"]
     assert text.caption_alt.split("\n\n")[:2] == ["لماذا توقف فيسبوك؟", "هل توقف فيسبوك اليوم؟"]
     assert text.hashtags[:2] == ["#ميتا", "#tech"]                        # script tags first …
-    assert "#تقنية" in text.hashtags and "#رائج" in text.hashtags          # … then the niche set + defaults
+    assert "#الذهب" in text.hashtags and "#خريطة_المال" in text.hashtags   # … then the niche set + defaults
     assert len(text.hashtags) == len(set(t.lower() for t in text.hashtags)) <= 15
     assert "المصادر: skynewsarabia.com" in text.caption_alt
+    disclaimer = cfg.brands[0]["disclaimer"]                               # Phase 21: every caption, both variants
+    assert "ليس نصيحة مالية" in disclaimer
+    assert text.caption.rstrip().endswith(disclaimer) and text.caption_alt.rstrip().endswith(disclaimer)
 
 
 def test_post_text_without_config_or_alt_keeps_the_old_shape():
@@ -311,11 +315,11 @@ def test_merge_tags_dedupes_case_insensitively():
 
 
 def test_youtube_title_adds_series_within_the_limit():
-    t = PostText("عطل مفاجئ يضرب ميتا", "c", [], series="عالم التقنية")
-    assert youtube.title_for(t) == "عطل مفاجئ يضرب ميتا | عالم التقنية"
-    assert youtube.title_for(PostText("x" * 95, "c", [], series="عالم التقنية")) == "x" * 95
+    t = PostText("عطل مفاجئ يضرب ميتا", "c", [], series="الذهب والأسواق")
+    assert youtube.title_for(t) == "عطل مفاجئ يضرب ميتا | الذهب والأسواق"
+    assert youtube.title_for(PostText("x" * 95, "c", [], series="الذهب والأسواق")) == "x" * 95
     assert youtube.title_for(PostText("x" * 120, "c", [])) == "x" * 99 + "…"
-    assert youtube.title_for(PostText("عنوان | عالم التقنية", "c", [], series="عالم التقنية")) == "عنوان | عالم التقنية"
+    assert youtube.title_for(PostText("عنوان | الذهب والأسواق", "c", [], series="الذهب والأسواق")) == "عنوان | الذهب والأسواق"
 
 
 def _yt_setup(tmp, scope="https://www.googleapis.com/auth/youtube"):
@@ -330,7 +334,7 @@ def test_playlist_needs_the_manage_scope(env):
     _yt_setup(tmp, scope="https://www.googleapis.com/auth/youtube.upload")
     assert not youtube.has_playlist_scope(cfg)
     boom = httpx.Client(transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(AssertionError("no call"))))
-    assert youtube.add_to_playlist(cfg, boom, {}, "vid", "عالم التقنية") is False
+    assert youtube.add_to_playlist(cfg, boom, {}, "vid", "الذهب والأسواق") is False
     _yt_setup(tmp)
     assert youtube.has_playlist_scope(cfg)
 
@@ -350,7 +354,7 @@ def test_upload_then_playlist_created_and_reused(env, monkeypatch):
         if path.endswith("/playlistItems") and req.method == "GET":
             return httpx.Response(200, json={"items": []})
         if path.endswith("/upload/youtube/v3/videos"):
-            assert json.loads(req.content)["snippet"]["title"] == "عطل مفاجئ يضرب ميتا | عالم التقنية"
+            assert json.loads(req.content)["snippet"]["title"] == "عطل مفاجئ يضرب ميتا | الذهب والأسواق"
             return httpx.Response(200, headers={"Location": "https://upload.example/s"})
         if req.url.host == "upload.example":
             return httpx.Response(200, json={"id": "vid1"})
@@ -359,7 +363,7 @@ def test_upload_then_playlist_created_and_reused(env, monkeypatch):
             return httpx.Response(200, json={"items": [{"id": "PLother", "snippet": {"title": "هل تعلم؟"}}]})
         if path.endswith("/playlists") and req.method == "POST":
             calls.append("create")
-            assert json.loads(req.content)["snippet"]["title"] == "عالم التقنية"
+            assert json.loads(req.content)["snippet"]["title"] == "الذهب والأسواق"
             return httpx.Response(200, json={"id": "PLtech"})
         if path.endswith("/playlistItems") and req.method == "POST":
             body = json.loads(req.content)["snippet"]
@@ -449,19 +453,19 @@ def test_hook_title_alt_is_kept_unless_it_copies_a(env):
 def test_cta_rotates_per_series_and_falls_back(env):
     cfg, _, _ = env
     b = cfg.brands[0]
-    tech = b["cta"]["عالم التقنية"]
-    assert write.cta_line(b, "عالم التقنية", 0) == tech[0] and write.cta_line(b, "عالم التقنية", 1) == tech[1]
-    assert write.cta_line(b, "عالم التقنية", len(tech)) == tech[0]
+    energy = b["cta"]["خريطة الطاقة"]
+    assert write.cta_line(b, "خريطة الطاقة", 0) == energy[0] and write.cta_line(b, "خريطة الطاقة", 1) == energy[1]
+    assert write.cta_line(b, "خريطة الطاقة", len(energy)) == energy[0]
     assert write.cta_line(b, "رياضة في دقيقة", 2) == b["cta"]["default"][2]        # no list for the series
     assert write.cta_line({"id": "x"}, None, 5) == "تابعنا للمزيد"
-    assert write.cta_line(b, "أداة اليوم", 0) == "الرابط في الوصف"
+    assert write.cta_line(b, "طرق التجارة", 0) == b["cta"]["طرق التجارة"][0]
 
 
 def test_script_prompt_lists_series_with_closing_lines_and_asks_for_alt(env):
     cfg, _, _ = env
     story = {"id": 3, "hook": "h", "key_facts": "[]", "claims": "[]", "why_trending": "w"}
     prompt = write.build_prompt(cfg, story, cfg.brands[0])
-    assert '"عالم التقنية" — closing line like: "' in prompt and "hook_title_alt" in prompt
+    assert '"خريطة الطاقة" — closing line like: "' in prompt and "hook_title_alt" in prompt
     assert "NO dialect words at all" in prompt and "professional Modern Standard Arabic" in prompt   # Phase 18
 
 
@@ -477,11 +481,17 @@ def test_endcard_draws_the_rotated_cta(env, tmp_path):
 
 def test_config_locks_the_niche_and_gulf_market(env):
     cfg, _, _ = env
-    assert cfg.get("ranking.categories") == ["tech", "money", "wow-facts", "life-hack", "tools"]
+    assert cfg.get("ranking.categories") == ["economy", "energy", "trade", "markets", "megaprojects"]
+    assert not set(cfg.get("ranking.categories")) & set(cfg.get("ranking.other_categories"))
+    assert cfg.brands[0]["name"] == "خريطة المال" and "ليس نصيحة مالية" in cfg.brands[0]["disclaimer"]
+    assert cfg.get("media.enabled") is False                           # no publishers' media (reused content)
     assert "US" not in cfg.get("discovery.trends.geos") and "SA" in cfg.get("discovery.trends.geos")
     assert cfg.brands[0]["voice"]["name"] == "ar-JO-TaimNeural"
     series = cfg.brands[0]["series"]
-    assert {"money", "tools"} <= set(series) and set(cfg.brands[0]["cta"]) >= {"default", series["tools"]}
+    assert set(cfg.get("ranking.categories")) <= set(series) and "default" in series
+    assert set(cfg.brands[0]["cta"]) >= {"default"} | {series[c] for c in cfg.get("ranking.categories")}
+    assert set(cfg.get("ranking.categories")) <= set(cfg.get("publish.seo_tags"))
+    assert set(cfg.get("ranking.categories")) <= set(cfg.get("music.moods"))
     assert all(cat in youtube.CATEGORY_IDS for cat in cfg.get("ranking.categories"))
     feeds = cfg.get("discovery.rss.feeds")
     assert sum(1 for f in feeds if f["region"] == "SA") >= 5 and len(feeds) == len({f["url"] for f in feeds})

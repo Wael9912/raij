@@ -253,11 +253,11 @@ def test_hook_title_and_series_saved_in_notes(env, monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     _story(conn)
     prompts = []
-    reply = {**_draft(), "hook_title": "الفيفا على المحك", "series": "رياضة في دقيقة"}
+    reply = {**_draft(), "hook_title": "النفط على المحك", "series": "خريطة الطاقة"}
     assert runner.script(cfg, conn, client=_llm([reply], prompts), out_dir=tmp) == 0
     notes = json.loads(conn.execute("SELECT notes FROM scripts").fetchone()[0])
-    assert notes["hook_title"] == "الفيفا على المحك" and notes["series"] == "رياضة في دقيقة"
-    assert '"هل تعلم؟"' in prompts[0] and "hook_title" in prompts[0]
+    assert notes["hook_title"] == "النفط على المحك" and notes["series"] == "خريطة الطاقة"
+    assert '"طرق التجارة"' in prompts[0] and "hook_title" in prompts[0]
 
 
 def test_backfill_titles_for_old_scripts(env, monkeypatch):

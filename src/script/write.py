@@ -15,6 +15,7 @@ import httpx
 from src import formats, llm
 from src.config import Config
 from src.script import facts, fusha, polish, similarity
+from src.visuals import spec, worldbank
 
 log = logging.getLogger("raij.script")
 
@@ -101,6 +102,9 @@ def validate(data: Any, min_words: int, max_words: int, kind: str = "short", str
         chapter = clean_title(b.get("chapter"), max_words=6)
         if chapter and role == "body":
             beat["chapter"] = chapter
+        visual = spec.clean(b.get("visual"))           # Phase 21: our own map/chart/stat; bad ones are dropped
+        if visual:
+            beat["visual"] = visual
         beats.append(beat)
     roles = [b["role"] for b in beats]
     if not beats or roles[0] != "hook":
@@ -181,7 +185,23 @@ def build_prompt(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extr
         series=series_lines(brand, int(story.get("id") or 0)),
         extra=f"\n{extra.strip()}\n" if extra.strip() else "",
         winners=f"\n{winners.strip()}\n" if winners.strip() else "",
+        visual_block=llm.load_prompt("_visual_block", visual_menu=visual_menu()),
     )
+
+
+def visual_menu() -> str:
+    """What the script model may put in a beat's "visual": the World Bank indicators, markers and routes the
+    renderer knows (src/visuals/spec.py rejects anything else)."""
+    from src.visuals import geo
+    inds = "\n".join(f"    {k} — {v[0]} ({v[1]})" for k, v in worldbank.CATALOG.items())
+    try:
+        places = ", ".join(geo.places())
+        routes = "\n".join(f"    {k} — {v['ar']}" for k, v in geo.routes().items())
+    except (OSError, ValueError):
+        places, routes = "(none)", "    (none)"
+    return (f"  World Bank indicators (for \"indicator\"):\n{inds}\n"
+            f"  Marker ids (for \"markers\"): {places}\n"
+            f"  Route ids (for \"route\"):\n{routes}")
 
 
 def draft(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str = "",
@@ -198,6 +218,12 @@ def draft(cfg: Config, story: dict[str, Any], brand: dict[str, Any], extra: str 
         if bad:
             raise DraftError(f"these numbers are not on the story card: {', '.join(bad)} — use only the "
                              f"card's figures", d)
+        for i, b in enumerate(d.beats):                # a chart may not invent data: card figures only
+            if b.get("visual"):
+                kept, why = spec.check(b["visual"], story)
+                if not kept:
+                    log.info("Story %s beat %d: visual dropped (%s)", story["id"], i, why)
+                    b.pop("visual")
         slang = fusha.dialect_words(d.body_ar)
         if slang:
             raise DraftError(f"the script contains colloquial words ({', '.join(slang)}) — write professional "

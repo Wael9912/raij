@@ -27,7 +27,8 @@ FLAG = "pick_flow"
 TTL = 12 * 3600                      # an untouched flow expires; its message loses the buttons on the next tap
 PLATFORM_ORDER = ("youtube", "instagram", "facebook", "tiktok", "tiktok_export")
 CATEGORY_AR = {"tech": "تقنية", "money": "مال", "wow-facts": "هل تعلم", "life-hack": "حيلة", "tools": "أداة",
-               "news-lite": "أخبار", "sports": "رياضة", "culture": "ثقافة"}
+               "news-lite": "أخبار", "sports": "رياضة", "culture": "ثقافة", "economy": "اقتصاد", "energy": "طاقة",
+               "trade": "تجارة", "markets": "أسواق", "megaprojects": "مشاريع كبرى"}
 SOURCE = {"trends": "Trends", "rss": "news", "wiki": "Wikipedia", "youtube": "YouTube", "reddit": "Reddit"}
 
 

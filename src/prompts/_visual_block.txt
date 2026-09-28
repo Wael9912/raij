@@ -1,0 +1,18 @@
+VISUALS — the channel shows its OWN animated maps and data charts, not other people's pictures. Give as
+many beats as it fits (aim for most of them) a "visual", chosen so it shows exactly what that beat says:
+- {"type": "map", "title": "2–6 Arabic words", "focus": ["ISO3", …], "compare": ["ISO3", …],
+   "markers": ["marker id", …], "route": "route id"} — countries by ISO 3166-1 alpha-3 code (SAU, ARE, EGY,
+   IRN, CHN, USA…); focus = the subject (gold), compare = the others it is weighed against (teal). Use a
+   route only when the beat is about that journey. Every field except "type" is optional, but a map needs at
+   least one country, marker or route.
+- {"type": "chart", "kind": "bar" | "line", "title": "…", "indicator": "World Bank id", "countries": [ISO3…],
+   "years": [first, last]} — REAL World Bank data, fetched by us: bar = compare 2–8 countries on the latest
+   year; line = 1–4 countries over time. Pick an indicator only if it really measures what the beat says.
+- {"type": "chart", "kind": "bar" | "line", "title": "…", "unit": "…", "source": "who reported it",
+   "points": [{"label": "…", "value": number}, …]} — ONLY with figures written on the story card (2–8 points).
+- {"type": "stat", "title": "…", "value": number, "unit": "…", "label": "what it is, ≤ 10 Arabic words",
+   "source": "who reported it"} — one striking figure from the story card.
+Any figure you put in a chart point or stat must appear on the card; we check, and drop the visual if not.
+Leave "visual" out of a beat when nothing on this list fits — stock footage from its "broll_keywords" plays.
+What you can use:
+{{visual_menu}}

@@ -164,8 +164,8 @@ def test_parse_verdicts_drops_malformed():
 # --- rank end to end ---------------------------------------------------------
 
 VERDICTS = {
-    "howto": (True, "life-hack"), "chip": (True, "tech"), "gpu": (True, "tech"), "phone": (True, "tech"),
-    "dance": (False, "culture"), "vote": (True, "political"), "whale": (True, "wow-facts"),
+    "port": (True, "trade"), "oil": (True, "energy"), "opec": (True, "energy"), "gas": (True, "energy"),
+    "dance": (False, "culture"), "vote": (True, "political"), "gold": (True, "markets"),
     "goal": (True, "sports"),
 }
 
@@ -188,7 +188,7 @@ def _classifier(calls):
         calls.append([it["title"] for it in items])
         return _gemini_reply({"items": [
             {"id": it["id"], "retellable": VERDICTS[it["title"]][0], "category": VERDICTS[it["title"]][1],
-             "topic": "gpu-launch" if it["title"] in ("gpu", "phone") else it["title"],
+             "topic": "opec-cut" if it["title"] in ("opec", "gas") else it["title"],
              "reason": f"because {it['title']}"} for it in items
         ]})
     return handler
@@ -203,7 +203,7 @@ def _report(out_dir):
 def test_rank_selects_top_retellable(env, monkeypatch):
     cfg, conn, tmp = env
     monkeypatch.setenv("GEMINI_API_KEY", "g")
-    cfg.data["ranking"]["batch_size"] = 5
+    cfg.data["ranking"].update(batch_size=5, top_n=5, max_per_category=2)   # the mechanism, not today's pace
     _seed(conn)
     calls = []
     client = httpx.Client(transport=httpx.MockTransport(_classifier(calls)))
@@ -217,8 +217,8 @@ def test_rank_selects_top_retellable(env, monkeypatch):
     assert len(titles) == 4                                           # only 4 candidates are in the niche
     assert "dance" not in titles and "vote" not in titles             # not retellable / political
     assert "goal" not in titles                                       # sports: recognised but never picked (Phase 12)
-    assert sum(1 for t in titles if t in ("chip", "gpu", "phone")) == 2   # max_per_category
-    assert "phone" not in titles                                      # same topic as "gpu"
+    assert sum(1 for t in titles if t in ("oil", "opec", "gas")) == 2     # max_per_category
+    assert "gas" not in titles                                        # same topic as "opec"
     assert all(s["reason"] and s["score_parts"] for s in report["selected"])
     assert [f["title"] for f in report["flagged"]] == ["vote"]
     assert json.loads((tmp / f"{report['date']}.json").read_text()) == report
@@ -281,7 +281,7 @@ def test_gemma_is_not_asked_for_json_mode(env, monkeypatch):
 def test_rank_day_is_the_schedule_timezone_day(env, monkeypatch):
     cfg, conn, tmp = env
     monkeypatch.setenv("GEMINI_API_KEY", "g")
-    cfg.data["ranking"]["batch_size"] = 5
+    cfg.data["ranking"].update(batch_size=5, top_n=5)
     _seed(conn)
 
     class Clock(datetime):
@@ -295,3 +295,26 @@ def test_rank_day_is_the_schedule_timezone_day(env, monkeypatch):
     assert _report(tmp)["date"] == "2026-09-23"
     stamps = {r[0][:10] for r in conn.execute("SELECT selected_at FROM candidates WHERE status = 'selected'")}
     assert stamps == {"2026-09-23"}
+
+
+@pytest.mark.parametrize("utc_day, long_days, longs", [
+    (21, [0, 3], 1),        # Monday in Cairo: a long explainer day
+    (22, [0, 3], 0),        # Tuesday: Shorts only
+    (22, None, 1),          # no weekday list: every day (pre-Phase-21)
+])
+def test_long_version_only_on_long_weekdays(env, monkeypatch, utc_day, long_days, longs):
+    cfg, conn, tmp = env
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    cfg.data["ranking"].update(batch_size=5, top_n=2, long_top_n=1, long_weekdays=long_days)
+    _seed(conn)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, utc_day, 10, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(runner, "datetime", Clock)
+    assert runner.rank(cfg, conn, client=httpx.Client(transport=httpx.MockTransport(_classifier([]))),
+                       out_dir=tmp) == 0
+    wanted = [r[0] or "" for r in conn.execute("SELECT wanted FROM candidates WHERE status = 'selected'")]
+    assert len(wanted) == 2 and sum(1 for w in wanted if "long" in w) == longs

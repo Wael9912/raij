@@ -70,6 +70,7 @@ def test_yt_search_keeps_relevant_lengths_most_viewed_first():
 
 def test_collect_reads_pages_then_search_and_caps():
     cfg = load_config()
+    cfg.data["media"]["enabled"] = True                 # Phase 21 turned it off in config; the mechanism stays
     calls = []
 
     def handler(request):
@@ -103,10 +104,35 @@ def env(tmp_path, monkeypatch):
         monkeypatch.setenv(key, "")
     cfg = load_config()
     cfg.root = tmp_path
+    cfg.data["media"]["enabled"] = True                 # Phase 21 turned it off in config; these test the pipeline
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
     yield cfg, conn, tmp_path
     conn.close()
+
+
+def test_media_off_fetches_and_uses_nothing(env, monkeypatch):
+    """Phase 21: with `media.enabled: false` (the channel's config) no publisher page is read for media and a
+    story that still carries media from before renders on stock only."""
+    cfg, conn, tmp = env
+    cfg.data["media"]["enabled"] = False
+    assert load_config().get("media.enabled") is False
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, text=PAGE)
+    row = {"id": 1, "source": "rss", "canonical_url": "https://news.example/story", "title": "Story 1",
+           "raw_json": "{}"}
+    assert media.collect(cfg, httpx.Client(transport=httpx.MockTransport(handler)), row,
+                         ["https://news.example/story"], run=lambda cmd: pytest.fail("yt-dlp must not run")) == []
+    assert calls == []
+    monkeypatch.setenv("PEXELS_API_KEY", "k")
+    _voiced_with_media(cfg, conn, [{"kind": "image", "url": "https://cdn.example/lead.jpg", "page": "p",
+                                    "source": "news.example", "lead": True}])
+    assert runner.assemble(cfg, conn, client=_media_client([]), run=FakeTools()) == 0
+    manifest = json.loads(conn.execute("SELECT broll_manifest FROM videos").fetchone()[0])
+    assert manifest and all(m["provider"] != "source" for m in manifest)
 
 
 def test_extract_records_source_media(env, monkeypatch):
@@ -227,7 +253,7 @@ def test_assign_real_spreads_over_beats_hook_first():
 
 def _voiced_with_media(cfg, conn, media_items):
     upsert_candidates(conn, [Candidate(source="rss", external_id="e1", canonical_url="https://x.example/1")])
-    conn.execute("UPDATE candidates SET category = 'tech'")
+    conn.execute("UPDATE candidates SET category = 'trade'")
     conn.execute("INSERT INTO stories (candidate_id, media) VALUES (1, ?)", (json.dumps(media_items),))
     conn.execute("INSERT INTO scripts (story_id, brand_id, body_ar, beats, status, notes) VALUES (1, 'raij', 'x', ?, 'passed', ?)",
                  (json.dumps(BEATS, ensure_ascii=False), json.dumps({"hook_title": "نظارات ميتا الجديدة"}, ensure_ascii=False)))
@@ -252,8 +278,8 @@ def test_assemble_puts_real_media_first_with_cover_music_and_credits(env, monkey
     monkeypatch.setenv("PEXELS_API_KEY", "k")
     _voiced_with_media(cfg, conn, MEDIA[:1] + MEDIA[3:])
     _pool(tmp, [{"file": "a.mp3", "title": "Cipher", "artist": "Kevin MacLeod", "site": "incompetech.com",
-                 "license": "CC BY 4.0", "moods": ["tech"]},
-                {"file": "b.mp3", "title": "Lasting Hope", "artist": "Kevin MacLeod", "license": "CC BY 4.0", "moods": ["calm"]}])
+                 "license": "CC BY 4.0", "moods": ["calm"]},
+                {"file": "b.mp3", "title": "Lasting Hope", "artist": "Kevin MacLeod", "license": "CC BY 4.0", "moods": ["upbeat"]}])
     tools = FakeTools()
     assert runner.assemble(cfg, conn, client=_media_client([]), run=tools) == 0
     row = dict(conn.execute("SELECT * FROM videos").fetchone())
@@ -263,8 +289,9 @@ def test_assemble_puts_real_media_first_with_cover_music_and_credits(env, monkey
     assert [(m["provider"], m["beat"]) for m in manifest] == [("source", 0), ("source", 1)]
     assert manifest[0]["still"] and manifest[0]["credit"] == "Source: news.example" and not manifest[1]["still"]
     notes = json.loads(row["notes"])
-    assert notes["media"] == {"real": 2, "photos": 1, "clips": 1, "stock": 0, "found": 2, "domains": ["news.example", "youtube.com"]}
-    assert notes["music"] == "assets/music/a.mp3"                      # tech → Cipher, never the calm track
+    assert notes["media"] == {"real": 2, "photos": 1, "clips": 1, "stock": 0, "found": 2, "domains": ["news.example", "youtube.com"],
+                              "own": 0, "own_kinds": []}             # Phase 21: no own visuals in this script
+    assert notes["music"] == "assets/music/a.mp3"                      # trade → calm → Cipher, never the upbeat one
     assert "Music: Cipher by Kevin MacLeod (incompetech.com), CC BY 4.0" in notes["credits"]
     assert "Media: news.example, youtube.com" in notes["credits"]
     render_cmd = " ".join(tools.cmds[-1])
@@ -321,16 +348,18 @@ def test_music_pick_moods_rotation_and_loose_fallback(env):
     (tmp / "assets/music").mkdir(parents=True)
     (tmp / "assets/music/x.mp3").write_bytes(b"m")
     assert music.pick(cfg, 3) == (Path("assets/music/x.mp3"), None)
-    _pool(tmp, [{"file": "t1.mp3", "title": "T1", "artist": "K", "license": "CC BY 4.0", "moods": ["tech"]},
-                {"file": "t2.mp3", "title": "T2", "artist": "K", "license": "CC BY 4.0", "moods": ["tech"]},
+    cfg.data["music"]["moods"] = {"energy": ["upbeat"], "markets": ["money", "calm"], "long": ["calm"],
+                                  "default": ["default"]}     # pinned: this checks the picking, not the moods
+    _pool(tmp, [{"file": "t1.mp3", "title": "T1", "artist": "K", "license": "CC BY 4.0", "moods": ["upbeat"]},
+                {"file": "t2.mp3", "title": "T2", "artist": "K", "license": "CC BY 4.0", "moods": ["upbeat"]},
                 {"file": "c.mp3", "title": "C", "artist": "K", "license": "CC BY 4.0", "moods": ["calm"]},
-                {"file": "gone.mp3", "title": "G", "artist": "K", "license": "CC BY 4.0", "moods": ["tech"]}])
+                {"file": "gone.mp3", "title": "G", "artist": "K", "license": "CC BY 4.0", "moods": ["upbeat"]}])
     (tmp / "assets/music/gone.mp3").unlink()
-    picks = {music.pick(cfg, i, "tech")[0].name for i in range(4)}
+    picks = {music.pick(cfg, i, "energy")[0].name for i in range(4)}
     assert picks == {"t1.mp3", "t2.mp3"}                                # gone.mp3 skipped, the two rotate
-    assert music.pick(cfg, 0, "tech", kind="long")[0].name in {"t1.mp3", "t2.mp3", "c.mp3"}
-    assert music.pick(cfg, 0, "money")[0].name == "c.mp3"               # money → calm
-    assert music.pick(cfg, 0, "tech")[1] == "Music: T1 by K, CC BY 4.0"
+    assert music.pick(cfg, 0, "energy", kind="long")[0].name in {"t1.mp3", "t2.mp3", "c.mp3"}
+    assert music.pick(cfg, 0, "markets")[0].name == "c.mp3"             # markets → money/calm
+    assert music.pick(cfg, 0, "energy")[1] == "Music: T1 by K, CC BY 4.0"
 
 
 def test_cover_card_variants(tmp_path):

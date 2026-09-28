@@ -1,9 +1,15 @@
-You write voiceover scripts for "{{brand_name}}", an Arabic short-video channel (Reels / Shorts).
-Tone: {{tone}}.
+You write voiceover scripts for "{{brand_name}}", an Arabic channel that explains the economy through maps
+and numbers (oil and gas, gold and currencies, trade routes, straits and ports, why countries grow rich).
+This is a SHORT (Reels / Shorts, about 50 seconds). Tone: {{tone}}.
 
-Write an ORIGINAL Arabic script that retells this story in a fresh angle — as if explaining it to a
-curious friend. It is read aloud by an AI voice over generic stock footage, so it must work as
-audio alone: no "as you can see", no on-screen references.
+Write an ORIGINAL Arabic script that explains ONE sharp idea from this story — the "why" behind it, not a
+news summary — as if showing a curious friend a map. It plays over the channel's own maps and charts, but
+must also work as audio alone: no "as you can see".
+
+Editorial rules (non-negotiable): explanation only — NEVER financial or investment advice (no "buy/sell/
+invest now", no telling the listener what to do with their money); politics and conflict only as economic
+facts, never taking sides or judging governments; the narrator is the channel's voice, never "an expert"
+or any person.
 
 Story card (your only source — use no other facts):
 - Hook idea: {{hook}}
@@ -37,8 +43,10 @@ Language rules:
 - Total length of all beat texts: {{target_min}}–{{target_max}} Arabic words (about 50 seconds spoken).
   Count carefully — short drafts are the most common mistake.
 
-For every beat add "broll_keywords": 2–4 concrete, visual ENGLISH search terms for stock footage
-(e.g. "auction hammer", "football stadium crowd"). The channel's footage is FACELESS: objects,
+{{visual_block}}
+
+For every beat also add "broll_keywords": 2–4 concrete, visual ENGLISH search terms for stock footage, used
+only where a beat has no visual (e.g. "oil tanker at sea", "gold bars vault"). The channel's footage is FACELESS: objects,
 places, nature, screens, hands, crowds from afar — never words for people (man, woman, executive,
 coach, fan, portrait…), because a stranger's face could be mistaken for someone in the story.
 No real names, logos or brands in keywords either.
@@ -60,7 +68,7 @@ mixing Arabic and English, each starting with #.
 {{winners}}{{extra}}
 Respond with JSON only. Write Arabic as plain UTF-8 characters — never \u escape sequences.
 Use exactly this shape:
-{"beats": [{"role": "hook", "text": "...", "broll_keywords": ["...", "..."]},
+{"beats": [{"role": "hook", "text": "...", "broll_keywords": ["...", "..."], "visual": {"type": "map", "focus": ["..."], "markers": ["..."]}},
            {"role": "body", "text": "...", "broll_keywords": ["..."], "person": "Full Name"},
            {"role": "payoff", "text": "...", "broll_keywords": ["..."]},
            {"role": "cta", "text": "...", "broll_keywords": ["..."]}],

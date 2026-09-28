@@ -2,49 +2,52 @@
 
 brands:
   - id: raij
-    name: "رائج"
+    name: "خريطة المال"           # Phase 21 (owner 2026-09-28): the channel became "Money Map" — geo-economics
+    handle: "@raijnow"             # YouTube handle (only the owner can change it, in Studio)
     language: ar
     # Phase 18 (owner 2026-09-24): professional Standard Arabic only — no dialect touch anywhere (replaces D3).
-    tone: "professional Modern Standard Arabic (الفصحى), pan-Arab news-channel register, warm, clear and curious"
+    tone: "professional Modern Standard Arabic (الفصحى), the calm, precise register of a documentary narrator explaining the economy with maps and numbers"
     voice:
       name: ar-JO-TaimNeural       # Phase 18 bench (script 43): Taim 94.5 % words read right, Shakir 94.4, Hamed 93.6, Laith 90.7
       alt: ar-EG-ShakirNeural      # used by the review bot's 🎙 Re-voice button
       rate: "+10%"                 # Shorts pacing; Arabic neural voices speak ~1.85 words/s at +0%
       pitch: "+0Hz"
     subtitle_font: "Cairo Black"   # assets/fonts/Cairo-Variable.ttf, shaped by raqm
-    # Series badge shown with the hook title and on the end card, by story category. The script
-    # LLM may pick another name from this list when it fits better.
+    # Series badge shown with the hook title and on the end card, by story category (Phase 21: one series per
+    # geo-economics beat). The script LLM may pick another name from this list when it fits better.
     series:
-      tech: "عالم التقنية"
-      money: "أرقام تهمك"
-      wow-facts: "هل تعلم؟"
-      life-hack: "حيلة اليوم"
-      tools: "أداة اليوم"          # apps, gadgets, AI tools — affiliate slot arrives in Phase 14 (D4)
-      sports: "رياضة في دقيقة"
-      culture: "حكايات"
-      news-lite: "رائج اليوم"
+      economy: "اقتصاد الدول"
+      energy: "خريطة الطاقة"
+      trade: "طرق التجارة"
+      markets: "الذهب والأسواق"
+      megaprojects: "مشاريع كبرى"
+      default: "خريطة المال"
     # Closing line: spoken CTA spirit for the script prompt and the end-card text, rotated per video
     # (Phase 12). Keyed by series name; "default" covers the rest.
     cta:
       default:
-        - "تابعنا للمزيد"
-        - "شاركها مع صديق يهمه الموضوع"
-        - "اكتب رأيك في التعليقات"
-      "عالم التقنية":
-        - "تابعنا لتعرف الجديد قبل الجميع"
-        - "شاركها مع صديق يحب التقنية"
-      "أرقام تهمك":
-        - "احفظها وارجع لها لاحقا"
-        - "شاركها مع صديق يهتم بالفلوس"
-      "هل تعلم؟":
-        - "شاركها مع شخص لا يعرفها"
-        - "تابعنا لمعلومة جديدة كل يوم"
-      "حيلة اليوم":
-        - "جربها وقل لنا النتيجة"
-        - "احفظها قبل أن تنساها"
-      "أداة اليوم":
-        - "الرابط في الوصف"
-        - "جربها وقل لنا رأيك"
+        - "تابعنا لنفهم الاقتصاد على الخريطة"
+        - "اكتب في التعليقات أي بلد نشرح اقتصاده في المرة القادمة"
+        - "شاركها مع صديق يسأل دائما لماذا"
+      "اقتصاد الدول":
+        - "أي اقتصاد تريد أن نشرحه في الحلقة القادمة؟"
+        - "تابعنا لنكمل رحلة اقتصاد الدول"
+      "خريطة الطاقة":
+        - "تابعنا لنتتبع النفط والغاز على الخريطة"
+        - "شاركها مع صديق يتابع أسعار الطاقة"
+      "طرق التجارة":
+        - "تابعنا لنكمل رحلة التجارة حول العالم"
+        - "اكتب لنا أي ممر تجاري نشرحه بعد ذلك"
+      "الذهب والأسواق":
+        - "تابعنا لتفهم ما وراء الأرقام"
+        - "شاركها مع صديق يسأل عن الذهب"
+      "مشاريع كبرى":
+        - "أي مشروع تريد أن نضعه على الخريطة؟"
+        - "تابعنا لنرى أين تذهب المليارات"
+    # Caption lines on every post (Phase 21): the channel explains, it never advises, and the viewer knows
+    # the narration is a synthetic voice.
+    disclaimer: "للشرح والتثقيف فقط، وليس نصيحة مالية أو استثمارية. التعليق الصوتي بصوت مولد آليا، والخرائط والرسوم من إعداد القناة."
+    byline: ""                     # "إعداد: <name>" — the human editor, when the owner wants it shown
     platforms: [instagram, facebook, youtube, tiktok, tiktok_export]   # tiktok = app inbox/direct; export = Telegram copy until it's connected
 
 discovery:
@@ -55,7 +58,7 @@ discovery:
     # (~1,600 each), so leave room for 3 uploads. Default plan costs ~1,620/day.
     daily_quota_budget: 5000
     trending_per_region: 50        # chart=mostPopular, 1 unit per region
-    shorts_queries: ["اكتشاف", "حقائق", "tech news", "life hack"]
+    shorts_queries: ["اقتصاد", "أسعار النفط", "الذهب", "economy explained"]
     results_per_query: 25          # search.list = 100 units per query per region
     shorts_lookback_hours: 48
   reddit:
@@ -96,24 +99,27 @@ discovery:
 
 ranking:
   weights: { view_velocity: 0.5, engagement: 0.3, recency: 0.2 }
-  top_n: 8                         # automatic daily Shorts picks (owner's picks via the bot come on top)
-  long_top_n: 1                    # of those, how many also get a long (2–5 min) version: best evergreen/explainer
+  # Phase 21 pace (research 2026-09-28: mass daily output is what YouTube's "inauthentic content" rule targets,
+  # and Shorts earn 3–14 % of long-form RPM): one Short a day, a long explainer twice a week.
+  top_n: 1                         # automatic daily Shorts picks (owner's picks via the bot come on top)
+  long_top_n: 1                    # of those, how many also get a long version: best evergreen/explainer …
+  long_weekdays: [0, 3]            # … only on these local weekdays (0 = Monday): Monday + Thursday
   shortlist: 12                    # items the bot's /trending list offers for picking
   window_hours: 48                 # only candidates seen this recently are ranked
   classify_pool: 45                # unchecked items sent to the LLM per run, round-robin across sources (Phase 12)
   batch_size: 15                   # items per LLM call
   max_per_category: 2              # keep the daily picks varied
-  # Phase 12 niche (owner's call, D1): only these categories are ever selected …
-  categories: [tech, money, wow-facts, life-hack, tools]
+  # Phase 21 niche (owner 2026-09-28, "geo-economics"): only these categories are ever selected …
+  categories: [economy, energy, trade, markets, megaprojects]
   # … these are still recognised by the screen so the model has an honest label; they're kept as `ranked`
   # but never picked.
-  other_categories: [news-lite, sports, culture]
+  other_categories: [tech, wow-facts, news-lite, sports, culture]
   flagged_categories: [political]  # never auto-scheduled
   winner_boost: 0.15               # score ×1.15 for categories of last week's best videos (0 = off)
   # Who the screen judges audience_fit for (Phase 12, D2).
-  audience: "Arabic-speaking viewers in Saudi Arabia and the Gulf (also Egypt and Sudan): curious, mobile-first, 18–35"
+  audience: "Arabic-speaking viewers in Saudi Arabia and the Gulf (also Egypt, the Levant, the Maghreb): curious adults, 20–45, who want to understand the economy behind the headlines"
   # Selection multipliers (Phase 12): score × category × region × fit × evergreen × winner boost.
-  category_weights: { tech: 1.0, money: 1.0, wow-facts: 1.05, life-hack: 1.05, tools: 1.0 }
+  category_weights: { economy: 1.0, energy: 1.05, trade: 1.05, markets: 1.0, megaprojects: 1.0 }
   region_weights: { SA: 1.0, AE: 1.0, KW: 0.95, QA: 0.95, BH: 0.95, OM: 0.95, AR: 0.95, EG: 0.85, SD: 0.8, US: 0.75 }
   region_default_weight: 0.75
   fit_weight: 0.15                 # × (1 + fit_weight × (audience_fit − 3)): fit 5 → ×1.3, fit 1 → ×0.7
@@ -173,11 +179,18 @@ video:
   cover_seconds: 0.8               # cover card (hero picture + title) opens every video = the first frame/thumbnail
   music_volume: 0.28               # music bed under the voice (also side-chain ducked while the voice speaks)
 
+# The channel's own animated maps, charts and stat cards (Phase 21, src/visuals): a beat whose script carries a
+# "visual" gets it for its whole length; stock only fills beats without one.
+visuals:
+  enabled: true
+
 # Real pictures/footage of the story (Phase 20, owner: "main subject must be real pics and vids; free clips only
 # fill the time"). extract records what the source pages carry (stories.media); assemble fetches into
 # assets/source/<story>/, frames it with a "Source: domain" credit, and uses it before any stock clip.
 media:
-  enabled: true
+  # Phase 21: OFF. Publishers' photos/footage (even credited) are "reused content" to YouTube's monetization
+  # review and a copyright-claim risk; the channel's own maps and charts replace them.
+  enabled: false
   max_items: 10                    # pictures + clips kept per story
   max_pages: 4                     # source pages scanned for media
   max_images_per_page: 6
@@ -195,11 +208,11 @@ media:
 music:
   enabled: true
   moods:
-    tech: [tech, upbeat]
-    money: [money, calm]
-    wow-facts: [wow-facts, energetic]
-    life-hack: [life-hack, upbeat]
-    tools: [tools, upbeat]
+    economy: [money, calm]
+    energy: [money, calm]
+    trade: [calm]
+    markets: [money, calm]
+    megaprojects: [tech, calm]
     long: [calm]
     default: [default]
 
@@ -220,7 +233,8 @@ publish:
   # `times: []` = publish as soon as approved (pre-12 behaviour).
   windows:
     timezone: Asia/Riyadh          # Gulf-first (D2)
-    times: []                      # owner 2026-09-24: "no limits" — approved videos post on the next pass.
+    times: ["14:00", "20:00"]      # Phase 21: paced uploads again (2026-09-24 "no limits" posted ~20 in a day
+                                   # and views collapsed); /post_now still skips them.
                                    # Windows were ["08:00", "13:00", "18:00", "21:00"]; restore to pace uploads.
     open_minutes: 150              # a window accepts videos this long after its start
     per_window: 1                  # videos a window may start (4 windows × 1 = 4 videos/day; /post_now skips windows)
@@ -244,12 +258,12 @@ publish:
   youtube_playlists: true          # add each Short to a playlist named after its series (needs the `youtube` scope)
   # SEO (Phase 12): fixed niche tags merged into every post's tags/hashtags, by story category.
   seo_tags:
-    tech: ["تقنية", "ذكاء_اصطناعي", "تكنولوجيا", "tech", "AI"]
-    money: ["اقتصاد", "مال", "أعمال", "استثمار", "business"]
-    wow-facts: ["هل_تعلم", "معلومات", "حقائق", "علوم", "facts"]
-    life-hack: ["حيل", "نصائح", "حيلة", "lifehack", "tips"]
-    tools: ["أدوات", "تطبيقات", "ذكاء_اصطناعي", "apps", "AItools"]
-    default: ["رائج", "شورتس", "السعودية", "الخليج", "Shorts"]
+    economy: ["اقتصاد", "اقتصاد_الدول", "الناتج_المحلي", "economy"]
+    energy: ["النفط", "الطاقة", "الغاز", "أوبك", "oil"]
+    trade: ["التجارة", "الشحن", "الموانئ", "trade", "shipping"]
+    markets: ["الذهب", "العملات", "الأسواق", "gold", "markets"]
+    megaprojects: ["مشاريع", "مدن", "بنية_تحتية", "megaprojects"]
+    default: ["خريطة_المال", "اقتصاد", "خرائط", "الخليج", "geoeconomics"]
   meta_graph_version: v25.0        # Graph API version for IG/FB Reels
   poll_seconds: 5                  # Instagram container processing poll
   poll_timeout_seconds: 600

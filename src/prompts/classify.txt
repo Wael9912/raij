@@ -1,30 +1,35 @@
-You screen trending items for an Arabic short-video channel. We never reuse the original
-video, images, or audio: we retell the item as a NEW 45–60 second Arabic voiceover over generic
-stock footage. Decide for each item whether its value survives that retelling.
+You screen trending items for an Arabic YouTube channel that explains the economy through maps and numbers
+(oil and gas, gold and currencies, trade routes, straits and ports, why countries grow rich or poor, big
+projects). We never reuse the original video, images or audio: the item is only a hook; we explain the
+economics behind it in a NEW Arabic voiceover over our own maps and data charts. Decide for each item whether
+it gives us a good economic explanation.
 
 Our audience: {{audience}}.
 
-RETELLABLE (true): a story, news event, surprising facts, a list, a how-to or tip, a discovery,
-a record, a product/tech announcement — anything whose interest lives in the information.
-NOT RETELLABLE (false): dances, memes, visual gags, pranks, music videos, trailers, reaction
-videos, livestream clips, ASMR, highlights whose only value is the footage itself, bare keywords
-with no discernible story, paywalled teasers with no facts, or anything unsafe for a general
-audience.
+RETELLABLE (true): an economic event or number that raises a "why/how" we can explain with a map or data —
+prices (oil, gold, food, currencies), trade and shipping, a country's economy, budgets and debt, energy,
+companies or sovereign funds as economic stories, megaprojects, resources (water, land, minerals), records.
+NOT RETELLABLE (false): anything with no economic angle (celebrity, sports results, gadget launches, pure
+science, crime, entertainment), personal-finance tips or "what to buy" (we never give financial advice),
+memes, trailers, paywalled teasers with no facts, or anything unsafe for a general audience.
 
 Pick exactly one category per item from: {{categories}}
-- "tech": technology, AI, science-of-tech, companies, launches, chips, space tech.
-- "money": economy, wealth, salaries, prices, startups, markets, business moves, personal finance.
-- "wow-facts": surprising science, nature, history, records, discoveries, "did you know".
-- "life-hack": practical tips and how-tos for everyday life, health habits, productivity.
-- "tools": a specific app, gadget, website or AI tool the viewer can use today (what it does, for whom).
-Use "political" for elections, governments, parties, wars, armed conflict, protests,
-sanctions, or politicians — even if the item is otherwise retellable.
+- "economy": national economies — growth, recession, inflation, debt, budgets, wages, jobs, wealth of nations.
+- "energy": oil, gas, OPEC, refineries, electricity, renewables, water and power as resources.
+- "trade": shipping, ports, canals and straits, supply chains, tariffs, exports and imports, trade deals.
+- "markets": gold, currencies, commodities, stock markets, central banks, sovereign funds, big companies'
+  economic moves.
+- "megaprojects": cities, infrastructure, dams, railways, giant projects and what they cost or change.
+Other labels, for honesty only (never picked): "tech", "wow-facts", "sports", "culture", "news-lite".
+Use "political" when the item is about elections, parties, politicians' statements, protests, or the fighting
+itself in a war — even if it has an economic side. The ECONOMIC consequence of a war, sanction or tariff
+(shipping rerouted, prices moved, exports lost) is NOT political: label it by its economic category.
 
 For each item also judge:
 - "audience_fit": 1–5 — how much OUR audience would care (5 = they'd share it; 1 = local to another
   country or niche they never follow, e.g. American football rosters, US college sports, local US weather).
-- "evergreen": true if it stays interesting a month from now (facts, how-tos, tools), false if it's
-  only news of the day.
+- "evergreen": true if the explanation stays interesting a month from now (how something works, why a
+  country is rich, a route's history), false if it's only today's news.
 - "ad_safe": false when death, illness, tragedy, crime, war casualties, sexual content, gambling,
   drugs, alcohol, weapons, hate or graphic content is the point of the story (not a passing mention) —
   advertisers skip those; true otherwise.
@@ -39,5 +44,5 @@ Items (JSON):
 {{items}}
 
 Respond with JSON only, in exactly this shape, with one entry per input id:
-{"items": [{"id": 123, "retellable": true, "category": "tech", "topic": "new-chip-launch",
-            "audience_fit": 4, "evergreen": false, "ad_safe": true, "format": "story", "reason": "..."}]}
+{"items": [{"id": 123, "retellable": true, "category": "markets", "topic": "gold-record-high",
+            "audience_fit": 4, "evergreen": false, "ad_safe": true, "format": "explainer", "reason": "..."}]}

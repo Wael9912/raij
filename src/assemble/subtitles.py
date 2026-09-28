@@ -163,9 +163,11 @@ def make_cues(words: list[dict[str, Any]], beats: list[dict[str, Any]], renderer
 
 
 def render_sequence(words: list[dict[str, Any]], beats: list[dict[str, Any]], out_dir: Path,
-                    total: float, renderer: Renderer | None = None, hide_until: float = 0.0) -> Path:
+                    total: float, renderer: Renderer | None = None, hide_until: float = 0.0,
+                    mute: list[tuple[float, float]] | None = None) -> Path:
     """Write subtitle PNGs + an ffmpeg concat list covering [0, total]; returns the list path.
-    Nothing shows before `hide_until` (the on-screen hook title has the screen then)."""
+    Nothing shows before `hide_until` (the on-screen hook title has the screen then), nor for cues starting
+    inside a `mute` span (a long video's own chart or map has the whole frame; cues never cross beats)."""
     renderer = renderer or Renderer()
     out_dir.mkdir(parents=True, exist_ok=True)
     texts = [w["text"] for w in words]
@@ -175,7 +177,7 @@ def render_sequence(words: list[dict[str, Any]], beats: list[dict[str, Any]], ou
     entries: list[tuple[Path, float]] = []
     t = 0.0
     for c, cue in enumerate(make_cues(words, beats, renderer)):
-        if cue.end <= hide_until:
+        if cue.end <= hide_until or any(a <= cue.start < b for a, b in mute or ()):
             continue
         shown_from = max(cue.start, hide_until)
         if shown_from > t:

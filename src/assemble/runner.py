@@ -23,6 +23,7 @@ import httpx
 
 from src.assemble import brand, broll, music, portrait, render, sourcemedia, subtitles, thumbnail
 from src import db, formats
+from src.visuals import render as visuals
 from src.config import Config
 from src.discover.common import make_client
 
@@ -121,9 +122,30 @@ def ensure_media(cfg: Config, client: httpx.Client, video: dict[str, Any], conn:
         conn.commit()
 
 
+def render_visuals(cfg: Config, video: dict[str, Any], client: httpx.Client, beats: list[dict[str, Any]],
+                   starts: list[tuple[float, float]], frame: tuple[int, int], pad: float,
+                   sink=None) -> tuple[list[Path | None], list[dict[str, Any]]]:
+    """Phase 21: each beat's own map/chart/stat, rendered to the beat's length (+ `pad` for the transition
+    overlap). A beat without a visual, or whose data is unavailable, gets None and falls back to stock."""
+    clips: list[Path | None] = []
+    info: list[dict[str, Any]] = []
+    out = visuals.out_dir(cfg, int(video["id"]))
+    for i, (beat, (start, end)) in enumerate(zip(beats, starts)):
+        spec = beat.get("visual")
+        if not spec or not cfg.get("visuals.enabled", True):
+            clips.append(None)
+            info.append({})
+            continue
+        clip, notes = visuals.render_beat(cfg, client, spec, round(end - start + pad + 0.5, 3), frame,
+                                          out / f"beat_{i:02d}.mp4", sink=sink)
+        clips.append(clip)
+        info.append(notes)
+    return clips, info
+
+
 def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
                    run: render.RunCmd = render.run_cmd, recent: set[str] | None = None,
-                   exclude: set[str] | None = None) -> dict[str, Any]:
+                   exclude: set[str] | None = None, visual_sink=None) -> dict[str, Any]:
     """`exclude` (provider:id) clips are never picked — used by review's "new b-roll"."""
     beats_text = json.loads(video["beats"])
     timing = json.loads((cfg.root / video["voice_path"]).with_suffix(".words.json").read_text(encoding="utf-8"))
@@ -171,14 +193,27 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
         starts.append((start, end))
         slots.append(broll.clips_needed(end - start, fmt.cut_every))
     people = [b.get("person") for b in beats_text]
-    real_per_beat = assign_real(real, [n - (1 if (people[i] and n > 1) else 0) for i, n in enumerate(slots)],
-                                reuse=int(cfg.get("media.reuse", 1)))
     timing_s["media"] = round(time.monotonic() - t0, 1)
     t0 = time.monotonic()
+    own, own_info = render_visuals(cfg, video, client, beats_text, starts, fmt.frame,
+                                   float(cfg.get("video.transition_seconds", 0.3)), sink=visual_sink)
+    timing_s["visuals"] = round(time.monotonic() - t0, 1)
+    t0 = time.monotonic()
+    real_per_beat = assign_real(real, [0 if own[i] else n - (1 if (people[i] and n > 1) else 0)
+                                       for i, n in enumerate(slots)], reuse=int(cfg.get("media.reuse", 1)))
     for i, (beat, span) in enumerate(zip(beats_text, spans)):
         start, end = starts[i]
         n = slots[i]
         paths: list[Path] = []
+        if own[i]:                                     # the channel's own visual owns the whole beat
+            paths.append(own[i].relative_to(cfg.root))
+            manifest.append({"provider": "generated", "id": f"{video['id']}:{i}", "path": str(paths[0]),
+                             "beat": i, "at": round(start, 3), "seconds": round(end - start, 3), **own_info[i]})
+            credit = own_info[i].get("credit")
+            if credit and credit not in credits:
+                credits.append(credit)
+            clips_per_beat.append(paths)
+            continue
         # A beat about a public figure opens on their licensed photo; the rest is faceless stock.
         person = beat.get("person")
         if person and person not in photos:
@@ -214,6 +249,20 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
 
     # Cover card = first frame = thumbnail: the hero picture (first real still, else a Commons photo), title, badge.
     hero = next((cfg.root / it.extra["photo"] for it in real if it.still and it.extra.get("photo")), None)
+    first_own = next((c for c in own if c), None)
+    if hero is None and first_own is not None:             # the channel's own first map (text-free) or chart
+        still = work / "hero.jpg"
+        first_map = next((b["visual"] for b, c in zip(beats_text, own) if c and b["visual"]["type"] == "map"), None)
+        try:
+            if first_map is not None:
+                from src.visuals import mapviz
+                mapviz.still(first_map, fmt.frame).save(still, quality=92)
+            else:
+                run([cfg.secret("FFMPEG_BIN", "ffmpeg"), "-v", "error", "-y", "-sseof", "-0.6", "-i",
+                     str(first_own), "-frames:v", "1", "-update", "1", str(still)])
+        except Exception as exc:                            # never lose the video over its cover picture
+            log.warning("Video %s: cover still failed: %s", video["id"], exc)
+        hero = still if still.exists() else None
     if hero is None and photos:
         hero = next((cfg.root / p.path for p in photos.values() if p), None)
     cover_path = brand.cover(look, work / "cover.jpg", title or (beats_text[0]["text"] if beats_text else None),
@@ -225,7 +274,9 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
     segments += render.segments_for(spans, clips_per_beat, voice_s, lead=lead)
     total = sum(s.seconds for s in segments) + endcard_s
     hook_s = fmt.hook_title_seconds if title else 0.0
-    subs_list = subtitles.render_sequence(words, spans, work, total, renderer, hide_until=lead + hook_s)
+    # Long videos: the frame belongs to the chart/map while it plays (YouTube still gets the full .srt).
+    mute = [starts[i] for i, c in enumerate(own) if c] if not fmt.portrait else []
+    subs_list = subtitles.render_sequence(words, spans, work, total, renderer, hide_until=lead + hook_s, mute=mute)
     from src.script.write import cta_line
     cta = cta_line(look, series, video["id"])
     card = brand.endcard(look, work / "endcard.png", series, cta, frame=fmt.frame)
@@ -276,7 +327,7 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
             made = brand.cover(look, thumb_path, title or (beats_text[0]["text"] if beats_text else None), series,
                                photo=hero, frame=thumbnail.SIZE, with_logo=True)
         else:
-            clean = [cfg.root / m["path"] for m in manifest if m.get("provider") not in ("wikimedia", "source")
+            clean = [cfg.root / m["path"] for m in manifest if m.get("provider") not in ("wikimedia", "source", "generated")
                      and m.get("path")]
             made = thumbnail.make(cfg, plan.out, total - endcard_s,
                                   title or (beats_text[0]["text"] if beats_text else None),
@@ -284,10 +335,12 @@ def assemble_video(cfg: Config, video: dict[str, Any], client: httpx.Client,
         thumb = str(made.relative_to(cfg.root)) if made else None
         timing_s["thumbnail"] = round(time.monotonic() - t0, 1)
     shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(visuals.out_dir(cfg, int(video["id"])), ignore_errors=True)
     n_real = sum(len(r) for r in real_per_beat)
-    media_notes = {"real": n_real, "photos": sum(1 for r in real_per_beat for it in r if it.still),
+    media_notes = {"own": sum(1 for c in own if c), "own_kinds": [i.get("kind") for i in own_info if i.get("kind")],
+                   "real": n_real, "photos": sum(1 for r in real_per_beat for it in r if it.still),
                    "clips": sum(1 for r in real_per_beat for it in r if not it.still),
-                   "stock": sum(1 for m in manifest if m.get("provider") not in ("wikimedia", "source")),
+                   "stock": sum(1 for m in manifest if m.get("provider") not in ("wikimedia", "source", "generated")),
                    "found": len(story_media), "domains": media_domains}
     return {"video_path": str(plan.out.relative_to(cfg.root)), "subtitle_path": str(srt_path.relative_to(cfg.root)),
             "duration_s": plan.total, "manifest": manifest,

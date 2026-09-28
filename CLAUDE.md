@@ -4,7 +4,7 @@ The full spec is `CLAUDE_CODE_BUILD_BRIEF_v2_raij-shorts.md` (gitignored, local 
 starting a phase; this file tracks **status, decisions, and the plan**, and wins where they differ.
 To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.md`).
 
-## Status (updated 2026-09-23)
+## Status (updated 2026-09-28)
 
 | Phase | State | Commit | Notes |
 |---|---|---|---|
@@ -26,6 +26,7 @@ To continue work, use the `raij-phase` skill (`.claude/skills/raij-phase/SKILL.m
 | 13b Post now | ✅ done | (2026-09-24) | audit "approved videos never all post": windows allow 4/day vs ~9 made/day + Meta keys missing + zombie job blocked the bot queue. `/post_now [ids]` (confirm tap) → `videos.notes.post_now` → `publish` job; `publish --now`; `publish.windows.per_window`; zombie-safe `jobs.alive` |
 | 20 Real media + music + cover | ✅ 2026-09-25 | (this commit) | owner: "products full of nonsense visuals — main subject must be real pics/vids from the source, free clips only fill time; add music, intro hook, thumbnail shown before playing". `extract/media.py` finds source pictures/videos (og:image, in-article images, embedded/YouTube video, YouTube search) → `stories.media`; `assemble/sourcemedia.py` fetches + frames them with a "Source: domain" credit; real first, stock fills; cover card (hero + title) = first frame + `<id>.cover.jpg` + long thumbnail; CC BY music pool (`tools/fetch_music.py`, 16 tracks) with credit in captions. Live on a DB copy: Muse-glasses Short 9 real / 0 stock, onager long 6 real (+reuse) / 16 stock |
 | 19 Performance audit | ✅ 2026-09-24 | (this commit) | the 10:30 daily run took 4 h 16 min because the **Mac slept** (lid closed 10:33 → 14:21; Power Nap woke it 45 s every 16 min without network): 5/8 picks lost to ConnectError, a cut-off edge-tts stream (22/99 words) was rendered as #46 and sent for review. Fixes: `src/power.py` caffeinate while pipeline commands run, `tts.check_complete` (Truncated), outages never count as attempts, **same-day catch-up** (`publish --catch-up` every 30 min → `produce` on leftovers, `pipeline.catch_up_hours` 2), stale `running` runs closed, `videos.notes.timing` per assemble step. Encoder benchmark: libx264 medium ≈ 6× real time on the M3, videotoolbox no faster — not the bottleneck |
+| 21 خريطة المال pivot | ✅ 2026-09-28 | (this commit) | audit after launch: 2,015 views/31 videos, views collapsed after the 09-24 ~20-video burst; publishers' photos = YouTube "reused content"; mass cadence = "inauthentic content" (Jul 2025/Jul 2026 policy). Owner picked **geo-economics** («خريطة المال», Money Map) over legal/political (AI-persona ban covers legal/finance/politics advice). Built `src/visuals/` (own animated maps from Natural Earth + curated sea lanes, World Bank charts, stat cards; card figures checked like the script's), `visual` per beat in the script prompts, assemble renders them per beat (stock only fills; publisher media OFF), clean-map cover/thumbnail, long videos mute burned subtitles over their own visuals, new niche categories/series/CTAs/tags, disclaimer in every caption, pace 1 Short/day + long Mon/Thu, posting windows 14:00/20:00 Riyadh. Channel page via `tools/channel_page.py` (description, keywords, banner; 31 old videos unlisted, 7 old playlists private); brand kit `tools/make_brand.py`. Live on a DB copy: Hormuz long 137 s, 4 own visuals + 8 matching stock |
 
 Keys in `.env`: `GEMINI_API_KEY`, `PEXELS_API_KEY`, `TELEGRAM_BOT_TOKEN` (@Raig88_bot), `TELEGRAM_CHAT_ID` (owner's private chat).
 Missing: YouTube API key (discovery), Reddit, Groq, Pixabay, Meta. YouTube OAuth ✅ (`data/youtube.token.json`; re-auth
@@ -65,6 +66,19 @@ sqlite3 data/pipeline.db "select source, status, count(*) from candidates group 
   with the Co-Authored-By trailer. Update the status table above.
 
 ## Decisions so far
+
+- **Phase 21 (2026-09-28) supersedes the Phase 12/20 niche and media rules.** Niche = geo-economics, brand «خريطة المال»
+  (brand id stays `raij` — DB rows reference it). Publisher media (`media.enabled`) is OFF: reused content + claims. Every
+  beat may carry a `visual` (`src/visuals/spec.py` shapes: map/chart/stat); World Bank indicators only from
+  `worldbank.CATALOG` (Arabic label + unit), markers/routes only from `visuals/places.json` (sea lanes hand-traced off
+  land at 1:50m); chart points/stat values must match the story card (`facts.supported`, value scaled by its unit —
+  "8 مليون" is 8e6). Missing data → the beat falls back to stock, never fails the video. Long videos hide burned
+  subtitles while their own visual plays (the chart needs the frame; YouTube gets the .srt); Shorts keep them and charts
+  stay above the band (`canvas.safe_bottom`). Map camera: two basemaps drawn once, frames are crops (≈1× real time on the
+  M3). Scripts must explain (a thesis), never advise, never take political sides, and never present the narrator as a
+  person/expert — YouTube's July 2026 rule demonetizes "AI personas on sensitive topics (health, legal, finances,
+  politics)". Captions end with `brands[].disclaimer` (+ `byline` when set). Dialect gate: `حاجة` is MSA too; spelled
+  Latin letters ("سي إم إيه سي جي إم") are not dialect.
 
 - pytrends is archived → Google Trends via public trending RSS (`trends.google.com/trending/rss`); no SD feed.
 - Default RSS feeds (BBC Arabic, Sky News Arabia, AIT News, BBC Tech, Ars Technica, ScienceDaily) so
@@ -461,14 +475,15 @@ Sections A code, B security, C bot UX, D content strategy (with the owner decisi
 | 12 | Content I (owner: D1 tech/money/wow-facts/life-hack + tools, D2 Gulf-first, D3 MSA + `ar-SA-HamedNeural`, D4 tools series): niche/region/fit weights, round-robin screen, ad-safe gate, Gulf feeds, posting windows, SEO title/description/tags, playlists, CTA rotation, A/B titles | ✅ 2026-09-23 (playlists need owner re-auth) |
 | 13 | Pick-before-render via Telegram (`/trending` → pick → format → platforms → make), `/topic`, `/script`, `/run`, `/jobs`, jobs queue, Wikipedia source | ✅ 2026-09-23 |
 | 15 | Long format (landscape 2–5 min, chapters, thumbnail), per-format script/voice/render/publish, automatic 1 long/day | ✅ 2026-09-23 (live: #30 from /topic) |
+| 21 | خريطة المال pivot: own maps/charts/stats (`src/visuals`), geo-economics niche, pace, disclaimer, channel page | ✅ 2026-09-28 |
 | 14 | Topic performance memory, traffic-source metrics, `tools`/affiliate series, second brand; real series objects (templates, quotas, evergreen backlog) from the old 13 | ⬜ next |
 | 16 | Music: CC-BY/CC0 pool by mood with credits (assets/music is empty — long videos are voice-only); libass-free karaoke polish; weekly compile of the week's Shorts | ⬜ |
 
 Still pending from before:
-0. **Owner: `! gh variable set RAIJ_ENABLED --body false -R Wael9912/raij`** (blocked for Claude by the auto-mode
-   classifier; the workflow has no cron anymore, so this is belt-and-braces).
-1. **Owner: YouTube re-auth for playlists** — `uv run python -m src.main youtube-auth` (new `youtube` scope; the token
-   file is local now, no secret to update while on the Mac). Until then Shorts upload fine, playlists log a hint.
+0. ~~RAIJ_ENABLED~~ — set to `false` on 2026-09-25 (hosted fallback fully off).
+1. ~~YouTube re-auth~~ — the token has the full `youtube` scope (verified 2026-09-28: channel page + unlisting worked).
+1a. **Owner (Phase 21): rename the channel to «خريطة المال» in YouTube Studio** (the API ignores `brandingSettings.channel.title`)
+   and upload `assets/brand/avatar.png` as the profile picture (no API for it). Handle @raijnow can stay or change there too.
 2. **Owner: Meta keys** — paste App ID, App Secret, short-lived token → exchange → add to .env. IG/FB start with the
    first videos approved after the keys exist.
 3. Watch the first Mac daily run (07:00 Cairo, `data/logs/daily.log`): Gemini quota with top_n 8 + 1 long

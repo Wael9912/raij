@@ -285,13 +285,13 @@ def test_hook_title_and_series_from_script(env, monkeypatch):
     cfg, conn, _ = env
     monkeypatch.setenv("PEXELS_API_KEY", "k")
     _voiced(cfg, conn)
-    conn.execute("UPDATE candidates SET category = 'wow-facts'")
+    conn.execute("UPDATE candidates SET category = 'energy'")
     conn.execute("UPDATE scripts SET notes = ?", (json.dumps({"hook_title": "مزاد لا يصدق"}, ensure_ascii=False),))
     conn.commit()
     ff = FakeFFmpeg()
     assert runner.assemble(cfg, conn, client=_stock_client([]), run=ff) == 0
     notes = json.loads(conn.execute("SELECT notes FROM videos").fetchone()[0])
-    assert notes["hook_title"] == "مزاد لا يصدق" and notes["series"] == "هل تعلم؟"
+    assert notes["hook_title"] == "مزاد لا يصدق" and notes["series"] == "خريطة الطاقة"
     assert "hook.txt" in " ".join(ff.cmds[0])
 
 

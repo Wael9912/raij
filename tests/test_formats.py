@@ -230,7 +230,7 @@ def test_extract_topic_researches_news_and_asks_for_depth_and_category(env, monk
         if request.url.host == "generativelanguage.googleapis.com":
             prompts.append(json.loads(request.content)["contents"][0]["parts"][0]["text"])
             card = {"usable": True, "hook": "Gold at a record", "key_facts": [f"fact {i}" for i in range(10)],
-                    "claims": [], "why_trending": "prices", "category": "money"}
+                    "claims": [], "why_trending": "prices", "category": "markets"}
             return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps(card)}]}}]})
         if "wikipedia.org" in request.url.host:
             return httpx.Response(200, json={"query": {"search": []}})
@@ -241,7 +241,7 @@ def test_extract_topic_researches_news_and_asks_for_depth_and_category(env, monk
     assert "off-topic" in prompts[0]
     story = dict(conn.execute("SELECT * FROM stories").fetchone())
     assert len(json.loads(story["key_facts"])) == 10 and story["transcript_src"] == "news"
-    assert conn.execute("SELECT category FROM candidates").fetchone()[0] == "money"
+    assert conn.execute("SELECT category FROM candidates").fetchone()[0] == "markets"
 
 
 # --- long scripts -------------------------------------------------------------------------------

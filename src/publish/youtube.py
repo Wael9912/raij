@@ -43,7 +43,9 @@ CHUNK = 8 * 1024 * 1024                    # multiple of 256 KiB, as the API req
 MAX_STALLS = 3                              # consecutive 308s with no progress before giving up (A12)
 # YouTube category ids by story category.
 CATEGORY_IDS = {"news-lite": "25", "tech": "28", "sports": "17", "culture": "24", "wow-facts": "27",
-                "life-hack": "26", "money": "27", "tools": "28"}
+                "life-hack": "26", "money": "27", "tools": "28",
+                # Phase 21 (خريطة المال): explainers file under Education.
+                "economy": "27", "energy": "27", "trade": "27", "markets": "27", "megaprojects": "27"}
 
 
 def secret_file(cfg: Config) -> Path:

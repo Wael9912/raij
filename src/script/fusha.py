@@ -31,7 +31,13 @@ DIALECT = {
     "هيك", "هلق", "هلأ", "شو", "كتير", "منيح", "منيحة", "بدي", "بدك", "بدنا", "بدهم", "لسا", "ليكي", "هاد", "هاي",
 }
 # Words above that also read as MSA in some positions; they never trigger by themselves.
-_SAFE = {"طب", "طيب", "بقى", "بقت", "زي", "عاد", "مو", "دول", "حيل"}
+# "حاجة" is also Standard ("في حاجة إلى", "الحاجة إلى المياه") — live 2026-09-28 it rejected a clean MSA draft.
+_SAFE = {"طب", "طيب", "بقى", "بقت", "زي", "عاد", "مو", "دول", "حيل", "حاجة", "حاجات"}
+# Latin letters spelled out in Arabic ("سي إم إيه سي جي إم" = CMA CGM, "بي بي سي"): "إيه"/"دي" there are letters,
+# not dialect, when a neighbouring token is a spelled letter too.
+LETTER_NAMES = {"إيه", "ايه", "إي", "اي", "بي", "سي", "دي", "إف", "اف", "جي", "إتش", "اتش", "آي", "جيه", "كيه",
+                "إل", "ال", "إم", "ام", "إن", "ان", "أو", "كيو", "آر", "ار", "إس", "اس", "تي", "يو", "في", "إكس",
+                "اكس", "واي", "زد", "دبليو"}
 _ACTIVE = DIALECT - _SAFE
 # "ما هداش", "مبيعرفش", "مش عارف" — the Egyptian ش-negation has no MSA reading at all.
 _SH_NEG = re.compile(r"\b(?:ما\s+|م)[ء-ي]{2,}ش\b")
@@ -53,7 +59,10 @@ def _tokens(text: str) -> list[str]:
 def dialect_words(text: str) -> list[str]:
     """Colloquial words found in `text`, in order of first appearance (no duplicates)."""
     found: list[str] = []
-    for tok in _tokens(text):
+    toks = _tokens(text)
+    for i, tok in enumerate(toks):
+        if tok in LETTER_NAMES and any(0 <= j < len(toks) and toks[j] in LETTER_NAMES for j in (i - 1, i + 1)):
+            continue
         bare = tok
         for pre in ("و", "ف", "ب", "ل", "ك", "ال"):     # clitics: "وليه", "بالحين" (one layer is enough)
             if bare in _ACTIVE:
