@@ -36,7 +36,7 @@ class ShapingError(RuntimeError):
     """Arabic can't be shaped (raqm missing) — rendering would produce broken text."""
 
 
-@lru_cache(maxsize=32)
+@lru_cache(maxsize=128)
 def font(size: int, weight: int = 900) -> ImageFont.FreeTypeFont:
     if not textshape.available():
         raise ShapingError("Arabic text shaping needs raqm — run `brew install libraqm` (see SETUP.md)")
@@ -51,15 +51,68 @@ def text_kw(text: str) -> dict[str, str]:
     return {"direction": "rtl" if _ARABIC.search(text) else "ltr", "language": "ar"}
 
 
+SUPERSAMPLE = 4
+
+
+@lru_cache(maxsize=1024)
+def _rendered(text: str, size: int, weight: int, fill: tuple, stroke: int, stroke_fill: tuple,
+              anchor: str) -> tuple[Image.Image, int, int]:
+    """(RGBA image, dx, dy): the text drawn with its anchor at (0, 0), image placed at (dx, dy).
+
+    Pillow anti-aliases every glyph on its own, so where two joined Arabic letters meet, both edges are
+    half-covered and the join shows as a hairline (the stroke colour bleeds through) — words look like
+    separate letters. Drawing un-anti-aliased at 4× (glyphs then meet pixel-exactly) and box-downscaling
+    gives smooth edges with no seams."""
+    k = SUPERSAMPLE
+    f = font(size * k, weight)
+    kw = text_kw(text)
+    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
+    l, t, r, b = probe.textbbox((0, 0), text, font=f, anchor=anchor, stroke_width=stroke * k, **kw)
+    l0, t0 = (int(l) // k - 1) * k, (int(t) // k - 1) * k
+    w, h = (int(r) - l0) // k + 2, (int(b) - t0) // k + 2
+    def mask(width: int) -> Image.Image:
+        m = Image.new("L", (w * k, h * k), 0)
+        d = ImageDraw.Draw(m)
+        d.fontmode = "1"
+        d.text((-l0, -t0), text, font=f, fill=255, anchor=anchor, stroke_width=width, **kw)
+        return m.filter(ImageFilter.MaxFilter(3))      # glyphs snap to the grid one by one: close 1-px gaps
+
+    big = Image.new("RGBA", (w * k, h * k), (0, 0, 0, 0))
+    if stroke:
+        big.paste(stroke_fill, (0, 0), mask(stroke * k))
+    big.paste(fill, (0, 0), mask(0))
+    return big.resize((w, h), Image.Resampling.BOX), l0 // k, t0 // k
+
+
+def rgba(color) -> tuple[int, int, int, int]:
+    c = tuple(int(v) for v in color)
+    return c if len(c) == 4 else (*c[:3], 255)
+
+
+def draw_text(img: Image.Image, xy: tuple[float, float], text: str, size: int, fill=WHITE, anchor: str = "la",
+              weight: int = 900, stroke: int = 0, stroke_fill=BLACK, alpha: float = 1.0) -> tuple[int, int, int, int]:
+    """Draw one line of text onto `img` (RGB or RGBA) like `ImageDraw.text`, without seams between joined
+    letters (see `_rendered`). Returns the box it covers."""
+    t, dx, dy = _rendered(text, size, weight, rgba(fill), stroke, rgba(stroke_fill), anchor)
+    if alpha < 1.0:
+        t = t.copy()
+        t.putalpha(t.getchannel("A").point(lambda v: int(v * max(alpha, 0.0))))
+    x, y = round(xy[0]) + dx, round(xy[1]) + dy
+    box = (x, y, x + t.width, y + t.height)
+    if img.mode == "RGBA":
+        cx, cy = max(-x, 0), max(-y, 0)                # alpha_composite refuses negative offsets
+        if cx or cy:
+            t = t.crop((cx, cy, t.width, t.height))
+        if t.width and t.height:
+            img.alpha_composite(t, (x + cx, y + cy))
+    else:
+        img.paste(t, (x, y), t)
+    return box
+
+
 def text_image(text: str, size: int, fill=WHITE, stroke: int = 0, stroke_fill=BLACK) -> Image.Image:
     """One line of text on a transparent image cropped to its ink (plus stroke)."""
-    f = font(size)
-    kw = text_kw(text)
-    l, t, r, b = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), text, font=f, stroke_width=stroke, **kw)
-    img = Image.new("RGBA", (int(r - l) + 2, int(b - t) + 2), (0, 0, 0, 0))
-    ImageDraw.Draw(img).text((-l + 1, -t + 1), text, font=f, fill=fill, stroke_width=stroke,
-                             stroke_fill=stroke_fill, **kw)
-    return img
+    return _rendered(text, size, 900, rgba(fill), stroke, rgba(stroke_fill), "la")[0].copy()
 
 
 def pill(text: str, size: int, fg=INK, bg=YELLOW, pad_x: float = 0.55, pad_y: float = 0.28) -> Image.Image:

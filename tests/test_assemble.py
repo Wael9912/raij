@@ -575,3 +575,15 @@ def test_render_sequence_with_no_words_still_covers_the_video(tmp_path):
     lst = subtitles.render_sequence([], [], tmp_path, total=3.0)
     body = lst.read_text()
     assert "duration 3.000" in body and body.splitlines()[-1] == "file 'blank.png'"
+
+
+def test_joined_arabic_letters_have_no_seams():
+    """Pillow anti-aliases glyphs one by one, so joins showed hairlines and words looked like loose letters."""
+    from PIL import Image
+    img = Image.new("RGB", (700, 200), (0, 0, 0))
+    brand.draw_text(img, (680, 150), "منطقة لتنظيم", 92, fill=(255, 255, 255), anchor="rs", stroke=7)
+    px = img.load()
+    # the baseline bar runs unbroken under the joined letters: no column in it may dip below full white
+    y = max(range(100, 160), key=lambda y: sum(px[x, y][0] == 255 for x in range(700)))
+    dips = [x for x in range(2, 698) if px[x, y][0] < 250 and px[x - 2, y][0] == 255 and px[x + 2, y][0] == 255]
+    assert not dips

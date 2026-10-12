@@ -50,18 +50,9 @@ def phase(t: float, start: float, end: float) -> float:
 def text(draw_on: Image.Image, xy: tuple[float, float], s: str, size: int, fill=WHITE, anchor: str = "ra",
          weight: int = 900, stroke: int = 0, stroke_fill=(0, 0, 0), alpha: float = 1.0) -> tuple[int, int, int, int]:
     """Draw one line of (Arabic-shaped) text; anchor like Pillow's ("ra" = right/ascender). Returns its box."""
-    f = brand.font(size, weight)
-    kw = brand.text_kw(s)
-    if alpha < 1.0:
-        layer = Image.new("RGBA", draw_on.size, (0, 0, 0, 0))
-        d = ImageDraw.Draw(layer)
-        d.text(xy, s, font=f, fill=(*fill[:3], int(255 * alpha)), anchor=anchor, stroke_width=stroke,
-               stroke_fill=(*stroke_fill[:3], int(255 * alpha)), **kw)
-        draw_on.paste(layer, (0, 0), layer)
-        return d.textbbox(xy, s, font=f, anchor=anchor, stroke_width=stroke, **kw)
-    d = ImageDraw.Draw(draw_on)
-    d.text(xy, s, font=f, fill=fill, anchor=anchor, stroke_width=stroke, stroke_fill=stroke_fill, **kw)
-    return d.textbbox(xy, s, font=f, anchor=anchor, stroke_width=stroke, **kw)
+    brand.draw_text(draw_on, xy, s, size, fill=fill, anchor=anchor, weight=weight, stroke=stroke,
+                    stroke_fill=stroke_fill, alpha=alpha)
+    return text_box(xy, s, size, anchor, weight, stroke)
 
 
 class Labels:

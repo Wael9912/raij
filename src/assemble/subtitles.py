@@ -126,15 +126,14 @@ class Renderer:
             base = y + s.size * 0.8
             for i in order:
                 w, wd = self.glyphs(words[i]), self.width(words[i])
-                kw = brand.text_kw(w)
                 if i == active:
                     pad = s.size * 0.16
                     d.rounded_rectangle((x - pad + s.stroke / 2, base - s.size * 0.98, x + wd + pad - s.stroke / 2,
                                          base + s.size * 0.36), radius=int(s.size * 0.24), fill=s.highlight)
-                    d.text((x + s.stroke, base), w, font=self.ar, fill=s.highlight_text, anchor="ls", **kw)
+                    brand.draw_text(img, (x + s.stroke, base), w, s.size, fill=s.highlight_text, anchor="ls")
                 else:
-                    d.text((x + s.stroke, base), w, font=self.ar, fill=s.fill, anchor="ls",
-                           stroke_width=s.stroke, stroke_fill=s.stroke_fill, **kw)
+                    brand.draw_text(img, (x + s.stroke, base), w, s.size, fill=s.fill, anchor="ls",
+                                    stroke=s.stroke, stroke_fill=s.stroke_fill)
                 x += wd + self.space
             y += line_h
         return img

@@ -101,11 +101,10 @@ def compose(src: Path, credit: str, out: Path, frame: tuple[int, int] = (W, H)) 
     fg = ImageOps.contain(img, box)
     top = 140 if H > W else int(H * 0.14)
     bg.paste(fg, ((W - fg.width) // 2, top + (box[1] - fg.height) // 2))
-    d = ImageDraw.Draw(bg)
     font = brand.font(26, weight=700)
     text = credit if font.getlength(credit) <= W - 60 else credit[:90] + "…"
-    d.text((W / 2, 100 if H > W else 60), text, font=font, fill=(235, 235, 235), anchor="mm", stroke_width=2,
-           stroke_fill=(0, 0, 0))
+    brand.draw_text(bg, (W / 2, 100 if H > W else 60), text, 26, fill=(235, 235, 235), anchor="mm", weight=700,
+                    stroke=2, stroke_fill=(0, 0, 0))
     out.parent.mkdir(parents=True, exist_ok=True)
     bg.save(out, quality=92)
     return out
